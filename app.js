@@ -3,7 +3,36 @@
 const PEER_PREFIX = "go-baduk-room-v1-";
 const STORAGE_KEY = "go_match_archives_v1";
 
-// Game Engine & Connection
+// Audio Synthesis for Byo-yomi Countdown & Tone
+function playCountdownTone(freq = 440, duration = 0.08) {
+  try {
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start();
+    osc.stop(audioCtx.currentTime + duration);
+  } catch (_) {}
+}
+
+function speakCountdown(number) {
+  playCountdownTone(number <= 3 ? 880 : 540, 0.06);
+
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(String(number));
+    utterance.rate = 1.35; // brisk, sharp countdown cadence
+    utterance.pitch = 1.05;
+    utterance.volume = 1.0;
+    window.speechSynthesis.speak(utterance);
+  }
+}
+
 let engine = new GoEngine(19, 6.5);
 let peer = null;
 let conn = null;
@@ -469,6 +498,10 @@ function startClocks() {
     } else {
       if (t.byoSec > 0) {
         t.byoSec--;
+        // Voice countdown when byo-yomi hits <= 10 seconds for the active player
+        if (t.byoSec <= 10 && t.byoSec >= 1) {
+          speakCountdown(t.byoSec);
+        }
       } else {
         t.periodsLeft--;
         if (t.periodsLeft <= 0) {
@@ -482,6 +515,7 @@ function startClocks() {
           return;
         } else {
           t.byoSec = clockConfig.byoyomiSeconds;
+          speakCountdown(t.byoSec);
         }
       }
     }
@@ -902,12 +936,18 @@ function updateGameUI() {
   if (engine.phase === 'playing') {
     turnBanner.textContent = `Current Turn: ${engine.turn === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE)}`;
     scoringCard.classList.add('hidden');
-    gamePassBtn.disabled = false;
+    
+    // Pass button only appears and is enabled when it is YOUR turn
+    const isMyTurn = !conn || !myRole || engine.turn === myRole;
+    gamePassBtn.classList.toggle('hidden', !isMyTurn);
+    gamePassBtn.disabled = !isMyTurn;
+
     gameUndoBtn.disabled = false;
     gameResignBtn.disabled = false;
   } else if (engine.phase === 'scoring') {
     turnBanner.textContent = `Japanese Scoring Phase`;
     scoringCard.classList.remove('hidden');
+    gamePassBtn.classList.add('hidden');
     gamePassBtn.disabled = true;
     gameUndoBtn.disabled = true;
 
