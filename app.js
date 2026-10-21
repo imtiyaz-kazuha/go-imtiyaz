@@ -3,20 +3,92 @@
 const PEER_PREFIX = "go-baduk-room-v1-";
 const STORAGE_KEY = "go_match_archives_v1";
 
+// Audio Synthesis for Realistic Go Stone Placement, Captures & Byo-yomi
+let sharedAudioCtx = null;
+function getAudioContext() {
+  if (!sharedAudioCtx) {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) sharedAudioCtx = new AudioCtx();
+  }
+  if (sharedAudioCtx && sharedAudioCtx.state === 'suspended') {
+    sharedAudioCtx.resume();
+  }
+  return sharedAudioCtx;
+}
+
+// Crisp wood "clack" stone sound synthesis
+function playStoneSound() {
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // Body knock (low wood thud)
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = 'triangle';
+    osc1.frequency.setValueAtTime(320, now);
+    osc1.frequency.exponentialRampToValueAtTime(70, now + 0.08);
+    gain1.gain.setValueAtTime(0.5, now);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.08);
+
+    // Sharp ceramic/slate snap
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(1400, now);
+    osc2.frequency.exponentialRampToValueAtTime(280, now + 0.04);
+    gain2.gain.setValueAtTime(0.35, now);
+    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.start(now);
+    osc2.stop(now + 0.04);
+  } catch (_) {}
+}
+
+// Stone capture sound effect (subtle double click)
+function playCaptureSound() {
+  try {
+    playStoneSound();
+    setTimeout(() => {
+      const ctx = getAudioContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(450, now);
+      osc.frequency.exponentialRampToValueAtTime(120, now + 0.06);
+      gain.gain.setValueAtTime(0.3, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.06);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.06);
+    }, 60);
+  } catch (_) {}
+}
+
 // Audio Synthesis for Byo-yomi Countdown & Tone
 function playCountdownTone(freq = 440, duration = 0.08) {
   try {
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
     osc.type = 'sine';
     osc.frequency.value = freq;
-    gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+    gain.gain.setValueAtTime(0.12, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
     osc.connect(gain);
-    gain.connect(audioCtx.destination);
+    gain.connect(ctx.destination);
     osc.start();
-    osc.stop(audioCtx.currentTime + duration);
+    osc.stop(ctx.currentTime + duration);
   } catch (_) {}
 }
 
@@ -299,6 +371,11 @@ function handleIncomingData(data) {
       const res = engine.playMove(data.r, data.c);
       if (res.success) {
         lastMoveCoord = [data.r, data.c];
+        if (res.captured && res.captured.length > 0) {
+          playCaptureSound();
+        } else {
+          playStoneSound();
+        }
         logMove(data.r, data.c, res.player, res.captured.length);
         updateClocksOnMove(res.player);
         updateGameUI();
@@ -798,6 +875,11 @@ function handleBoardClick(r, c) {
     }
 
     lastMoveCoord = [r, c];
+    if (res.captured && res.captured.length > 0) {
+      playCaptureSound();
+    } else {
+      playStoneSound();
+    }
     logMove(r, c, res.player, res.captured.length);
     updateClocksOnMove(res.player);
 
