@@ -93,17 +93,45 @@ function playCountdownTone(freq = 440, duration = 0.08) {
 }
 
 function speakCountdown(number) {
-  playCountdownTone(number <= 3 ? 880 : 540, 0.06);
+  // Always trigger audio beep
+  playCountdownTone(number <= 3 ? 880 : 540, 0.08);
 
+  // Robust cross-browser speech synthesis execution
   if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(String(number));
-    utterance.rate = 1.35;
-    utterance.pitch = 1.05;
-    utterance.volume = 1.0;
-    window.speechSynthesis.speak(utterance);
+    try {
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(String(number));
+      utterance.lang = 'en-US';
+      utterance.rate = 1.3;
+      utterance.pitch = 1.0;
+      utterance.volume = 1.0;
+
+      // Assign voice if available
+      const voices = window.speechSynthesis.getVoices();
+      if (voices && voices.length > 0) {
+        const englishVoice = voices.find(v => v.lang.startsWith('en')) || voices[0];
+        if (englishVoice) utterance.voice = englishVoice;
+      }
+
+      window.speechSynthesis.speak(utterance);
+    } catch (_) {}
   }
 }
+
+// User-interaction unlock for AudioContext and SpeechSynthesis
+function unlockAudio() {
+  getAudioContext();
+  if ('speechSynthesis' in window) {
+    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
+  }
+}
+window.addEventListener('click', unlockAudio, { once: false });
+window.addEventListener('touchstart', unlockAudio, { once: false });
+window.addEventListener('keydown', unlockAudio, { once: false });
+
 
 // Game State
 let engine = new GoEngine(19, 6.5);
@@ -164,6 +192,7 @@ const waitingSettingsSummary = document.getElementById('waitingSettingsSummary')
 const cancelWaitingBtn = document.getElementById('cancelWaitingBtn');
 
 const activeRoomTag = document.getElementById('activeRoomTag');
+const homeReturnBtn = document.getElementById('homeReturnBtn');
 const copyGameLinkBtn = document.getElementById('copyGameLinkBtn');
 const leaveGameBtn = document.getElementById('leaveGameBtn');
 const reviewModeToggleBtn = document.getElementById('reviewModeToggleBtn');
@@ -945,6 +974,17 @@ confirmScoreBtn.addEventListener('click', () => {
 leaveGameBtn.addEventListener('click', () => {
   if (confirm("Leave this match and return to home?")) {
     window.location.href = window.location.pathname;
+  }
+});
+
+homeReturnBtn.addEventListener('click', () => {
+  if (isReviewMode || engine.phase === 'finished') {
+    // Return directly if reviewing or finished
+    window.location.href = window.location.pathname;
+  } else {
+    if (confirm("Return to main home page? (Current active match will be left)")) {
+      window.location.href = window.location.pathname;
+    }
   }
 });
 
