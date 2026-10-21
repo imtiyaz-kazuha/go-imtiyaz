@@ -271,3 +271,8 @@ class GoEngine {
     };
   }
 }
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { GoEngine, EMPTY, BLACK, WHITE };
+}
+
