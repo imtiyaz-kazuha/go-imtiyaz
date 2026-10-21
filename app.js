@@ -1,14 +1,17 @@
-// Modern Go (Baduk) Application Controller, Clocks, WebRTC Room Networking & In-game Chat
+// Modern Go (Baduk) Application Controller, Clocks, WebRTC Networking, Undo, Review & Archives
 
 const PEER_PREFIX = "go-baduk-room-v1-";
+const STORAGE_KEY = "go_match_archives_v1";
 
-// Game State
+// Game Engine & Connection
 let engine = new GoEngine(19, 6.5);
 let peer = null;
 let conn = null;
 let isHost = false;
-let myRole = null; // BLACK, WHITE, or null
+let myRole = null; // BLACK or WHITE
 let currentRoomName = "";
+let myUsername = "";
+let opponentUsername = "Opponent";
 let hoverCoord = null;
 let lastMoveCoord = null;
 
@@ -25,12 +28,22 @@ let timers = {
 };
 let clockInterval = null;
 
+// Review Mode State
+let isReviewMode = false;
+let reviewStep = 0;
+let reviewHistory = []; // snapshots
+
 // DOM Elements
 const homeView = document.getElementById('homeView');
 const waitingModal = document.getElementById('waitingModal');
+const undoModal = document.getElementById('undoModal');
+const undoModalText = document.getElementById('undoModalText');
+const acceptUndoBtn = document.getElementById('acceptUndoBtn');
+const rejectUndoBtn = document.getElementById('rejectUndoBtn');
 const gameView = document.getElementById('gameView');
 
 const createRoomForm = document.getElementById('createRoomForm');
+const createPlayerNameInput = document.getElementById('createPlayerName');
 const createRoomNameInput = document.getElementById('createRoomName');
 const randomRoomBtn = document.getElementById('randomRoomBtn');
 const boardSizeSetting = document.getElementById('boardSizeSetting');
@@ -39,6 +52,7 @@ const mainTimeSetting = document.getElementById('mainTimeSetting');
 const byoyomiSetting = document.getElementById('byoyomiSetting');
 
 const joinRoomForm = document.getElementById('joinRoomForm');
+const joinPlayerNameInput = document.getElementById('joinPlayerName');
 const joinRoomNameInput = document.getElementById('joinRoomName');
 
 const waitingRoomNameEl = document.getElementById('waitingRoomName');
@@ -50,9 +64,12 @@ const cancelWaitingBtn = document.getElementById('cancelWaitingBtn');
 const activeRoomTag = document.getElementById('activeRoomTag');
 const copyGameLinkBtn = document.getElementById('copyGameLinkBtn');
 const leaveGameBtn = document.getElementById('leaveGameBtn');
+const reviewModeToggleBtn = document.getElementById('reviewModeToggleBtn');
 
 const blackHud = document.getElementById('blackHud');
 const whiteHud = document.getElementById('whiteHud');
+const blackPlayerNameEl = document.getElementById('blackPlayerName');
+const whitePlayerNameEl = document.getElementById('whitePlayerName');
 const blackRoleLabel = document.getElementById('blackRoleLabel');
 const whiteRoleLabel = document.getElementById('whiteRoleLabel');
 const blackCapturesEl = document.getElementById('blackCaptures');
@@ -63,9 +80,19 @@ const blackByoyomiEl = document.getElementById('blackByoyomi');
 const whiteMainTimeEl = document.getElementById('whiteMainTime');
 const whiteByoyomiEl = document.getElementById('whiteByoyomi');
 
+const gameActionsCard = document.getElementById('gameActionsCard');
 const turnBanner = document.getElementById('turnBanner');
 const gamePassBtn = document.getElementById('gamePassBtn');
+const gameUndoBtn = document.getElementById('gameUndoBtn');
 const gameResignBtn = document.getElementById('gameResignBtn');
+
+const reviewControlsCard = document.getElementById('reviewControlsCard');
+const reviewBanner = document.getElementById('reviewBanner');
+const revFirstBtn = document.getElementById('revFirstBtn');
+const revPrevBtn = document.getElementById('revPrevBtn');
+const revNextBtn = document.getElementById('revNextBtn');
+const revLastBtn = document.getElementById('revLastBtn');
+
 const scoringCard = document.getElementById('scoringCard');
 const scoreBreakdownEl = document.getElementById('scoreBreakdown');
 const confirmScoreBtn = document.getElementById('confirmScoreBtn');
@@ -82,6 +109,10 @@ const chatForm = document.getElementById('chatForm');
 const chatInput = document.getElementById('chatInput');
 const movesListEl = document.getElementById('movesList');
 
+const savedGamesCountEl = document.getElementById('savedGamesCount');
+const archivesListEl = document.getElementById('archivesList');
+const clearArchivesBtn = document.getElementById('clearArchivesBtn');
+
 // Random Room Generator
 const ADJECTIVES = ["swift", "silent", "wise", "golden", "mighty", "zen", "cosmic", "deep", "hidden", "bold"];
 const NOUNS = ["dragon", "tiger", "stone", "bamboo", "ko", "hoshi", "mountain", "crane", "river", "wind"];
@@ -95,18 +126,18 @@ randomRoomBtn.addEventListener('click', () => {
   createRoomNameInput.value = getRandomRoomName();
 });
 
-// Sanitize room name to valid peer ID format
 function sanitizeRoomName(name) {
   return name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
 }
 
 // -------------------------------------------------------------
-// Room Creation & WebRTC Peer Management
+// Room Creation & Lobby WebRTC Handshake
 // -------------------------------------------------------------
 createRoomForm.addEventListener('submit', (e) => {
   e.preventDefault();
-  const rawName = createRoomNameInput.value;
-  const cleanName = sanitizeRoomName(rawName);
+  myUsername = createPlayerNameInput.value.trim() || "HostPlayer";
+  const rawRoom = createRoomNameInput.value;
+  const cleanName = sanitizeRoomName(rawRoom);
   if (!cleanName) return;
 
   const size = parseInt(boardSizeSetting.value, 10);
@@ -126,32 +157,29 @@ createRoomForm.addEventListener('submit', (e) => {
 function createRoomAsHost(roomName, size, komi) {
   currentRoomName = roomName;
   isHost = true;
-  myRole = BLACK; // Host plays Black (Sente)
+  myRole = BLACK;
 
   engine = new GoEngine(size, komi);
   resetClocks();
 
-  // Peer ID = prefix + room name
   const peerId = PEER_PREFIX + roomName;
   if (peer) peer.destroy();
-
   peer = new Peer(peerId);
 
-  // Show Waiting Screen
   waitingRoomNameEl.textContent = roomName;
   const joinUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomName)}`;
   shareUrlInput.value = joinUrl;
   waitingSettingsSummary.innerHTML = `
+    <span>Host: ${myUsername}</span>
     <span>Board: ${size}x${size}</span>
     <span>Komi: ${komi}</span>
-    <span>Time: ${clockConfig.mainMinutes > 0 ? clockConfig.mainMinutes + 'm' : 'Unlimited'}</span>
-    <span>Byo: ${clockConfig.byoyomiSeconds}s (${clockConfig.byoyomiPeriods}x)</span>
+    <span>Time: ${clockConfig.mainMinutes > 0 ? clockConfig.mainMinutes + 'm' : '∞'}</span>
   `;
   waitingModal.classList.remove('hidden');
 
   peer.on('error', (err) => {
     if (err.type === 'unavailable-id') {
-      alert(`Room "${roomName}" is currently already active or hosted by someone else! Please choose another name.`);
+      alert(`Room "${roomName}" is currently active! Please choose another room name.`);
       waitingModal.classList.add('hidden');
     } else {
       console.error("Peer error:", err);
@@ -161,16 +189,17 @@ function createRoomAsHost(roomName, size, komi) {
   peer.on('connection', (incomingConn) => {
     conn = incomingConn;
     setupPeerEvents();
-    // Send Game Handshake with Rules & Timers to Guest
+
     conn.on('open', () => {
+      // Exchange username & rule configurations
       conn.send({
         type: 'INIT_GAME',
         size: engine.size,
         komi: engine.komi,
         clockConfig: clockConfig,
-        roomName: currentRoomName
+        roomName: currentRoomName,
+        hostUsername: myUsername
       });
-      startGame();
     });
   });
 }
@@ -178,6 +207,7 @@ function createRoomAsHost(roomName, size, komi) {
 // Join Room as Guest
 joinRoomForm.addEventListener('submit', (e) => {
   e.preventDefault();
+  myUsername = joinPlayerNameInput.value.trim() || "GuestPlayer";
   const cleanName = sanitizeRoomName(joinRoomNameInput.value);
   if (!cleanName) return;
   joinRoomAsGuest(cleanName);
@@ -186,21 +216,28 @@ joinRoomForm.addEventListener('submit', (e) => {
 function joinRoomAsGuest(roomName) {
   currentRoomName = roomName;
   isHost = false;
-  myRole = WHITE; // Guest plays White (Gote)
+  myRole = WHITE;
 
   if (peer) peer.destroy();
-  // Random guest ID
   peer = new Peer();
 
   peer.on('open', () => {
     const targetPeerId = PEER_PREFIX + roomName;
     conn = peer.connect(targetPeerId);
     setupPeerEvents();
+
+    conn.on('open', () => {
+      // Send guest username to host
+      conn.send({
+        type: 'GUEST_JOINED',
+        guestUsername: myUsername
+      });
+    });
   });
 
   peer.on('error', (err) => {
     console.error("Peer error:", err);
-    alert("Could not connect to room. Please check the room name and make sure the host is waiting.");
+    alert("Could not connect to room. Please verify the room name and make sure the host is waiting.");
   });
 }
 
@@ -210,7 +247,7 @@ function setupPeerEvents() {
   });
 
   conn.on('close', () => {
-    appendChatMessage('system', 'Opponent disconnected from the game.');
+    appendChatMessage('system', `${opponentUsername} disconnected.`);
   });
 }
 
@@ -220,7 +257,13 @@ function handleIncomingData(data) {
       engine = new GoEngine(data.size, data.komi);
       clockConfig = data.clockConfig;
       currentRoomName = data.roomName;
+      opponentUsername = data.hostUsername || "HostPlayer";
       resetClocks();
+      startGame();
+      break;
+
+    case 'GUEST_JOINED':
+      opponentUsername = data.guestUsername || "GuestPlayer";
       startGame();
       break;
 
@@ -237,7 +280,8 @@ function handleIncomingData(data) {
     case 'PASS':
       const pRes = engine.pass();
       if (pRes.success) {
-        appendChatMessage('system', `${pRes.passedBy === BLACK ? 'Black' : 'White'} passed.`);
+        const pName = pRes.passedBy === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE);
+        appendChatMessage('system', `${pName} passed.`);
         if (pRes.phaseChanged) {
           stopClocks();
           appendChatMessage('system', "Both players passed. Moving to Japanese Dead Stone removal phase.");
@@ -251,8 +295,24 @@ function handleIncomingData(data) {
     case 'RESIGN':
       engine.resign(data.color);
       stopClocks();
-      appendChatMessage('system', `${data.color === BLACK ? 'Black' : 'White'} has resigned.`);
+      const resigner = data.color === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE);
+      appendChatMessage('system', `${resigner} resigned.`);
+      finalizeAndSaveGame(`${data.color === BLACK ? getPlayerName(WHITE) : getPlayerName(BLACK)} wins by Resignation`);
       updateGameUI();
+      break;
+
+    case 'UNDO_REQUEST':
+      undoModalText.textContent = `${opponentUsername} has requested to undo their last move. Accept?`;
+      undoModal.classList.remove('hidden');
+      break;
+
+    case 'UNDO_RESPONSE':
+      if (data.accepted) {
+        appendChatMessage('system', `${opponentUsername} accepted your undo request.`);
+        executeUndo(data.steps);
+      } else {
+        appendChatMessage('system', `${opponentUsername} declined your undo request.`);
+      }
       break;
 
     case 'TOGGLE_DEAD':
@@ -262,7 +322,10 @@ function handleIncomingData(data) {
 
     case 'CONFIRM_SCORE':
       engine.phase = 'finished';
-      appendChatMessage('system', "Opponent accepted final score. Game complete!");
+      appendChatMessage('system', `${opponentUsername} accepted the score!`);
+      const score = engine.calculateJapaneseScore();
+      const winnerName = score.winner === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE);
+      finalizeAndSaveGame(`${winnerName} wins by ${score.margin.toFixed(1)} pts`);
       updateGameUI();
       break;
 
@@ -279,6 +342,11 @@ function handleIncomingData(data) {
   }
 }
 
+function getPlayerName(color) {
+  if (color === BLACK) return isHost ? myUsername : opponentUsername;
+  return isHost ? opponentUsername : myUsername;
+}
+
 function startGame() {
   waitingModal.classList.add('hidden');
   homeView.classList.add('hidden');
@@ -287,20 +355,90 @@ function startGame() {
   activeRoomTag.textContent = `Room: ${currentRoomName}`;
   displayKomiEl.textContent = engine.komi;
 
-  if (myRole === BLACK) {
+  if (isHost) {
+    blackPlayerNameEl.textContent = `${myUsername}`;
+    whitePlayerNameEl.textContent = `${opponentUsername}`;
     blackRoleLabel.textContent = "You";
     whiteRoleLabel.textContent = "Opponent";
   } else {
+    blackPlayerNameEl.textContent = `${opponentUsername}`;
+    whitePlayerNameEl.textContent = `${myUsername}`;
     blackRoleLabel.textContent = "Opponent";
     whiteRoleLabel.textContent = "You";
   }
+
+  isReviewMode = false;
+  reviewModeToggleBtn.classList.add('hidden');
+  gameActionsCard.classList.remove('hidden');
+  reviewControlsCard.classList.add('hidden');
 
   startClocks();
   updateGameUI();
 }
 
 // -------------------------------------------------------------
-// Chess/Go Clock & Japanese Byo-yomi
+// Undo System (Interactive Peer Agreement)
+// -------------------------------------------------------------
+gameUndoBtn.addEventListener('click', () => {
+  if (engine.phase !== 'playing') {
+    appendChatMessage('system', "Cannot undo outside playing phase.");
+    return;
+  }
+  if (engine.history.length === 0) {
+    appendChatMessage('system', "No moves have been played yet.");
+    return;
+  }
+
+  // Calculate steps to undo:
+  // If it's my turn, undo 2 steps (opponent's move + my previous move) or 1 step if opponent just played
+  const lastSnapshot = engine.history[engine.history.length - 1];
+  const steps = lastSnapshot.turn === myRole ? 1 : 2;
+
+  appendChatMessage('system', `Undo requested. Waiting for ${opponentUsername}'s approval...`);
+  if (conn && conn.open) {
+    conn.send({ type: 'UNDO_REQUEST', steps });
+  }
+});
+
+acceptUndoBtn.addEventListener('click', () => {
+  undoModal.classList.add('hidden');
+  const steps = engine.history.length >= 2 ? 2 : 1;
+  executeUndo(steps);
+  if (conn && conn.open) {
+    conn.send({ type: 'UNDO_RESPONSE', accepted: true, steps });
+  }
+});
+
+rejectUndoBtn.addEventListener('click', () => {
+  undoModal.classList.add('hidden');
+  if (conn && conn.open) {
+    conn.send({ type: 'UNDO_RESPONSE', accepted: false });
+  }
+});
+
+function executeUndo(steps = 1) {
+  const success = engine.undo(steps);
+  if (success) {
+    appendChatMessage('system', `Reverted ${steps} move(s).`);
+    // Remove last entries from moves list UI
+    for (let i = 0; i < steps; i++) {
+      if (movesListEl.lastElementChild) {
+        movesListEl.removeChild(movesListEl.lastElementChild);
+      }
+    }
+    lastMoveCoord = null;
+    if (engine.history.length > 0) {
+      const prev = engine.history[engine.history.length - 1];
+      if (prev.action && prev.action.r !== null) {
+        lastMoveCoord = [prev.action.r, prev.action.c];
+      }
+    }
+    updateGameUI();
+  }
+}
+
+// -------------------------------------------------------------
+// Clocks & Japanese Byo-yomi
 // -------------------------------------------------------------
 function resetClocks() {
   const mainSec = clockConfig.mainMinutes * 60;
@@ -313,7 +451,7 @@ function resetClocks() {
 
 function startClocks() {
   if (clockInterval) clearInterval(clockInterval);
-  if (clockConfig.mainMinutes === 0 && clockConfig.byoyomiSeconds === 0) return; // Unlimited
+  if (clockConfig.mainMinutes === 0 && clockConfig.byoyomiSeconds === 0) return;
 
   clockInterval = setInterval(() => {
     if (engine.phase !== 'playing') return;
@@ -332,14 +470,14 @@ function startClocks() {
       if (t.byoSec > 0) {
         t.byoSec--;
       } else {
-        // Lost one byoyomi period
         t.periodsLeft--;
         if (t.periodsLeft <= 0) {
-          // Time out loss
           engine.phase = 'finished';
           stopClocks();
           const winner = engine.opponent(currentTurn);
-          appendChatMessage('system', `${currentTurn === BLACK ? 'Black' : 'White'} lost on time.`);
+          const winnerName = getPlayerName(winner);
+          appendChatMessage('system', `${getPlayerName(currentTurn)} lost on time!`);
+          finalizeAndSaveGame(`${winnerName} wins on Time`);
           updateGameUI();
           return;
         } else {
@@ -350,7 +488,6 @@ function startClocks() {
 
     updateClockDisplay();
 
-    // Host periodically syncs authoritative time
     if (isHost && conn && conn.open && t.mainSec % 2 === 0) {
       conn.send({ type: 'SYNC_TIME', timers });
     }
@@ -359,7 +496,6 @@ function startClocks() {
 
 function updateClocksOnMove(playerWhoJustMoved) {
   const t = timers[playerWhoJustMoved];
-  // If in byoyomi, reset period countdown for next turn
   if (t && t.inByoyomi && t.periodsLeft > 0) {
     t.byoSec = clockConfig.byoyomiSeconds;
   }
@@ -385,21 +521,210 @@ function updateClockDisplay() {
     return;
   }
 
-  // Black Clock
   const b = timers[BLACK];
   blackMainTimeEl.textContent = formatTime(b.mainSec);
   blackByoyomiEl.textContent = b.inByoyomi ? `${b.byoSec}s (${b.periodsLeft} left)` : `${clockConfig.byoyomiSeconds}s (${clockConfig.byoyomiPeriods}x)`;
 
-  // White Clock
   const w = timers[WHITE];
   whiteMainTimeEl.textContent = formatTime(w.mainSec);
   whiteByoyomiEl.textContent = w.inByoyomi ? `${w.byoSec}s (${w.periodsLeft} left)` : `${clockConfig.byoyomiSeconds}s (${clockConfig.byoyomiPeriods}x)`;
 }
 
 // -------------------------------------------------------------
+// Match Saving & Local Replay Archive
+// -------------------------------------------------------------
+function finalizeAndSaveGame(resultString) {
+  reviewModeToggleBtn.classList.remove('hidden');
+
+  // Build clean history snapshots for replaying
+  const snapshots = engine.history.map(h => ({
+    board: h.board,
+    action: h.action,
+    captured: h.captured,
+    turn: h.turn
+  }));
+
+  // Append final state
+  snapshots.push({
+    board: engine.board.map(r => [...r]),
+    action: { type: 'final' },
+    captured: { ...engine.captured },
+    turn: engine.turn
+  });
+
+  const record = {
+    id: 'game_' + Date.now(),
+    date: new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    room: currentRoomName,
+    blackPlayer: getPlayerName(BLACK),
+    whitePlayer: getPlayerName(WHITE),
+    size: engine.size,
+    komi: engine.komi,
+    result: resultString,
+    totalMoves: engine.history.length,
+    snapshots: snapshots
+  };
+
+  saveGameToLocalStorage(record);
+  renderArchivesList();
+}
+
+function getStoredGames() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function saveGameToLocalStorage(record) {
+  const games = getStoredGames();
+  games.unshift(record);
+  // Keep up to 25 games
+  if (games.length > 25) games.pop();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(games));
+}
+
+function renderArchivesList() {
+  const games = getStoredGames();
+  savedGamesCountEl.textContent = `${games.length} game${games.length === 1 ? '' : 's'} stored`;
+
+  if (games.length === 0) {
+    archivesListEl.innerHTML = `<div class="empty-archive">No games saved yet. Complete a match to review moves step-by-step anytime!</div>`;
+    return;
+  }
+
+  archivesListEl.innerHTML = '';
+  games.forEach(g => {
+    const card = document.createElement('div');
+    card.className = 'archive-card';
+    card.innerHTML = `
+      <div class="archive-info">
+        <span class="archive-matchup">⚫ ${g.blackPlayer} vs ⚪ ${g.whitePlayer}</span>
+        <span class="archive-meta">${g.date} • ${g.size}x${g.size} • ${g.result} (${g.totalMoves} moves)</span>
+      </div>
+      <button class="btn-ghost btn-sm replay-btn" data-id="${g.id}">Review Game ▶</button>
+    `;
+    archivesListEl.appendChild(card);
+  });
+
+  // Attach review listeners
+  document.querySelectorAll('.replay-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      loadGameForReview(id);
+    });
+  });
+}
+
+clearArchivesBtn.addEventListener('click', () => {
+  if (confirm("Clear all locally saved match history?")) {
+    localStorage.removeItem(STORAGE_KEY);
+    renderArchivesList();
+  }
+});
+
+// -------------------------------------------------------------
+// Interactive Review Mode
+// -------------------------------------------------------------
+function loadGameForReview(gameId) {
+  const games = getStoredGames();
+  const game = games.find(g => g.id === gameId);
+  if (!game) return;
+
+  homeView.classList.add('hidden');
+  gameView.classList.remove('hidden');
+
+  activeRoomTag.textContent = `Review: ${game.room}`;
+  blackPlayerNameEl.textContent = game.blackPlayer;
+  whitePlayerNameEl.textContent = game.whitePlayer;
+  blackRoleLabel.textContent = "Archived";
+  whiteRoleLabel.textContent = "Archived";
+  displayKomiEl.textContent = game.komi;
+
+  engine = new GoEngine(game.size, game.komi);
+  reviewHistory = game.snapshots;
+  enterReviewMode();
+}
+
+reviewModeToggleBtn.addEventListener('click', () => {
+  if (!isReviewMode) {
+    reviewHistory = engine.history.map(h => ({
+      board: h.board,
+      action: h.action,
+      captured: h.captured,
+      turn: h.turn
+    }));
+    reviewHistory.push({
+      board: engine.board.map(r => [...r]),
+      action: { type: 'final' },
+      captured: { ...engine.captured },
+      turn: engine.turn
+    });
+    enterReviewMode();
+  } else {
+    exitReviewMode();
+  }
+});
+
+function enterReviewMode() {
+  isReviewMode = true;
+  gameActionsCard.classList.add('hidden');
+  reviewControlsCard.classList.remove('hidden');
+  reviewModeToggleBtn.textContent = "Exit Review";
+  reviewStep = reviewHistory.length - 1; // Start at final move
+  showReviewStep(reviewStep);
+}
+
+function exitReviewMode() {
+  isReviewMode = false;
+  gameActionsCard.classList.remove('hidden');
+  reviewControlsCard.classList.add('hidden');
+  reviewModeToggleBtn.textContent = "🔍 Review Game";
+  updateGameUI();
+}
+
+function showReviewStep(step) {
+  if (step < 0 || step >= reviewHistory.length) return;
+  reviewStep = step;
+
+  const snap = reviewHistory[step];
+  engine.board = snap.board.map(r => [...r]);
+  blackCapturesEl.textContent = snap.captured ? snap.captured[BLACK] : 0;
+  whiteCapturesEl.textContent = snap.captured ? snap.captured[WHITE] : 0;
+
+  lastMoveCoord = (snap.action && snap.action.r !== null) ? [snap.action.r, snap.action.c] : null;
+
+  reviewBanner.textContent = `Move ${reviewStep} / ${reviewHistory.length - 1}`;
+  highlightActiveLogEntry(reviewStep);
+  renderBoard();
+}
+
+function highlightActiveLogEntry(step) {
+  const entries = movesListEl.children;
+  for (let i = 0; i < entries.length; i++) {
+    entries[i].classList.toggle('active-step', i === step - 1);
+  }
+}
+
+revFirstBtn.addEventListener('click', () => showReviewStep(0));
+revPrevBtn.addEventListener('click', () => showReviewStep(reviewStep - 1));
+revNextBtn.addEventListener('click', () => showReviewStep(reviewStep + 1));
+revLastBtn.addEventListener('click', () => showReviewStep(reviewHistory.length - 1));
+
+// Keyboard arrow navigation for review
+window.addEventListener('keydown', (e) => {
+  if (!isReviewMode) return;
+  if (e.key === 'ArrowLeft') showReviewStep(reviewStep - 1);
+  if (e.key === 'ArrowRight') showReviewStep(reviewStep + 1);
+});
+
+// -------------------------------------------------------------
 // In-Game Moves & Interaction
 // -------------------------------------------------------------
 function handleBoardClick(r, c) {
+  if (isReviewMode) return;
+
   if (engine.phase === 'playing') {
     if (conn && myRole && engine.turn !== myRole) {
       appendChatMessage('system', "It's not your turn!");
@@ -430,7 +755,6 @@ function handleBoardClick(r, c) {
   }
 }
 
-// Pass & Resign
 gamePassBtn.addEventListener('click', () => {
   if (conn && myRole && engine.turn !== myRole) {
     appendChatMessage('system', "Wait for your turn to pass.");
@@ -438,7 +762,7 @@ gamePassBtn.addEventListener('click', () => {
   }
   const res = engine.pass();
   if (res.success) {
-    appendChatMessage('system', `${res.passedBy === BLACK ? 'Black' : 'White'} passed.`);
+    appendChatMessage('system', `${getPlayerName(res.passedBy)} passed.`);
     if (res.phaseChanged) {
       stopClocks();
       appendChatMessage('system', "Both passed! Japanese dead-stone scoring initiated.");
@@ -455,8 +779,12 @@ gameResignBtn.addEventListener('click', () => {
   const resigningColor = (conn && myRole) ? myRole : engine.turn;
   engine.resign(resigningColor);
   stopClocks();
-  appendChatMessage('system', `${resigningColor === BLACK ? 'Black' : 'White'} resigned.`);
+  const resignerName = getPlayerName(resigningColor);
+  appendChatMessage('system', `${resignerName} resigned.`);
   if (conn && conn.open) conn.send({ type: 'RESIGN', color: resigningColor });
+
+  const winnerName = getPlayerName(engine.opponent(resigningColor));
+  finalizeAndSaveGame(`${winnerName} wins by Resignation`);
   updateGameUI();
 });
 
@@ -464,17 +792,19 @@ confirmScoreBtn.addEventListener('click', () => {
   engine.phase = 'finished';
   appendChatMessage('system', "You accepted the final Japanese score.");
   if (conn && conn.open) conn.send({ type: 'CONFIRM_SCORE' });
+
+  const score = engine.calculateJapaneseScore();
+  const winnerName = score.winner === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE);
+  finalizeAndSaveGame(`${winnerName} wins by ${score.margin.toFixed(1)} pts`);
   updateGameUI();
 });
 
-// Leave Game
 leaveGameBtn.addEventListener('click', () => {
   if (confirm("Leave this room and return to home?")) {
     window.location.href = window.location.pathname;
   }
 });
 
-// Share URL helpers
 function copyGameInvite() {
   const url = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(currentRoomName)}`;
   navigator.clipboard.writeText(url).then(() => {
@@ -513,11 +843,10 @@ chatForm.addEventListener('submit', (e) => {
   const text = chatInput.value.trim();
   if (!text) return;
 
-  const senderName = myRole === BLACK ? 'Black' : (myRole === WHITE ? 'White' : 'Player');
-  appendChatMessage('me', text, senderName);
+  appendChatMessage('me', text, myUsername);
 
   if (conn && conn.open) {
-    conn.send({ type: 'CHAT', text, sender: senderName });
+    conn.send({ type: 'CHAT', text, sender: myUsername });
   }
 
   chatInput.value = '';
@@ -543,7 +872,7 @@ function appendChatMessage(type, text, sender = '') {
 }
 
 // -------------------------------------------------------------
-// Canvas Board Rendering & UI Sync
+// Board Rendering & Move Log
 // -------------------------------------------------------------
 function toGoNotation(r, c) {
   const letters = "ABCDEFGHJKLMNOPQRST";
@@ -552,7 +881,7 @@ function toGoNotation(r, c) {
 
 function logMove(r, c, player, capturedCount) {
   const coord = toGoNotation(r, c);
-  const pName = player === BLACK ? "Black" : "White";
+  const pName = player === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE);
   const item = document.createElement('div');
   item.className = 'move-entry';
   item.innerHTML = `<span>${pName}</span> <span>${coord} ${capturedCount > 0 ? '(+' + capturedCount + ')' : ''}</span>`;
@@ -561,6 +890,7 @@ function logMove(r, c, player, capturedCount) {
 }
 
 function updateGameUI() {
+  if (isReviewMode) return;
   renderBoard();
 
   blackCapturesEl.textContent = engine.captured[BLACK];
@@ -570,29 +900,33 @@ function updateGameUI() {
   whiteHud.classList.toggle('active-turn', engine.phase === 'playing' && engine.turn === WHITE);
 
   if (engine.phase === 'playing') {
-    turnBanner.textContent = `Current Turn: ${engine.turn === BLACK ? 'Black' : 'White'}`;
+    turnBanner.textContent = `Current Turn: ${engine.turn === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE)}`;
     scoringCard.classList.add('hidden');
     gamePassBtn.disabled = false;
+    gameUndoBtn.disabled = false;
     gameResignBtn.disabled = false;
   } else if (engine.phase === 'scoring') {
     turnBanner.textContent = `Japanese Scoring Phase`;
     scoringCard.classList.remove('hidden');
     gamePassBtn.disabled = true;
+    gameUndoBtn.disabled = true;
 
     const score = engine.calculateJapaneseScore();
     scoreBreakdownEl.innerHTML = `
-      <strong>Black:</strong> ${score.black.territory} terr + ${score.black.prisoners} captured + ${score.black.deadEnemyStones} dead = <strong>${score.black.total}</strong><br>
-      <strong>White:</strong> ${score.white.territory} terr + ${score.white.prisoners} captured + ${score.white.deadEnemyStones} dead + ${score.white.komi} komi = <strong>${score.white.total}</strong><br>
-      <em>Projected: ${score.winner === BLACK ? 'Black' : 'White'} by ${score.margin.toFixed(1)} pts</em>
+      <strong>${getPlayerName(BLACK)}:</strong> ${score.black.territory} terr + ${score.black.prisoners} captured + ${score.black.deadEnemyStones} dead = <strong>${score.black.total}</strong><br>
+      <strong>${getPlayerName(WHITE)}:</strong> ${score.white.territory} terr + ${score.white.prisoners} captured + ${score.white.deadEnemyStones} dead + ${score.white.komi} komi = <strong>${score.white.total}</strong><br>
+      <em>Leader: ${score.winner === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE)} by ${score.margin.toFixed(1)} pts</em>
     `;
   } else if (engine.phase === 'finished') {
     scoringCard.classList.remove('hidden');
     gamePassBtn.disabled = true;
+    gameUndoBtn.disabled = true;
     gameResignBtn.disabled = true;
     const score = engine.calculateJapaneseScore();
-    turnBanner.textContent = `Game Over: ${score.winner === BLACK ? 'Black' : 'White'} wins!`;
+    const winnerName = score.winner === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE);
+    turnBanner.textContent = `Game Over: ${winnerName} wins!`;
     scoreBreakdownEl.innerHTML = `
-      <strong>Final Result:</strong> ${score.winner === BLACK ? 'Black' : 'White'} wins by ${score.margin.toFixed(1)} points!
+      <strong>Final Result:</strong> ${winnerName} wins by ${score.margin.toFixed(1)} points!
     `;
   }
 }
@@ -606,29 +940,24 @@ function renderBoard() {
 
   ctx.clearRect(0, 0, width, height);
 
-  // Board wood background
   ctx.fillStyle = '#dcb378';
   ctx.fillRect(0, 0, width, height);
 
-  // Grid lines
   ctx.strokeStyle = '#3e271a';
   ctx.lineWidth = 1.2;
 
   for (let i = 0; i < size; i++) {
-    // Horizontal
     ctx.beginPath();
     ctx.moveTo(padding, padding + i * cell);
     ctx.lineTo(width - padding, padding + i * cell);
     ctx.stroke();
 
-    // Vertical
     ctx.beginPath();
     ctx.moveTo(padding + i * cell, padding);
     ctx.lineTo(padding + i * cell, height - padding);
     ctx.stroke();
   }
 
-  // Coordinate notation
   const letters = "ABCDEFGHJKLMNOPQRST";
   ctx.fillStyle = '#452814';
   ctx.font = '600 11px system-ui';
@@ -642,7 +971,6 @@ function renderBoard() {
     ctx.fillText(`${size - i}`, width - 14, padding + i * cell);
   }
 
-  // Star points
   ctx.fillStyle = '#3e271a';
   for (const [sr, sc] of getStarPoints(size)) {
     ctx.beginPath();
@@ -650,7 +978,6 @@ function renderBoard() {
     ctx.fill();
   }
 
-  // Territory markers if scoring
   if (engine.phase === 'scoring' || engine.phase === 'finished') {
     const scoreData = engine.calculateJapaneseScore();
     for (let r = 0; r < size; r++) {
@@ -665,7 +992,6 @@ function renderBoard() {
     }
   }
 
-  // Stones
   for (let r = 0; r < size; r++) {
     for (let c = 0; c < size; c++) {
       const stone = engine.board[r][c];
@@ -677,8 +1003,7 @@ function renderBoard() {
     }
   }
 
-  // Hover Ghost stone preview
-  if (hoverCoord && engine.phase === 'playing' && engine.board[hoverCoord.r][hoverCoord.c] === EMPTY) {
+  if (!isReviewMode && hoverCoord && engine.phase === 'playing' && engine.board[hoverCoord.r][hoverCoord.c] === EMPTY) {
     const isMyTurn = !conn || !myRole || engine.turn === myRole;
     if (isMyTurn) {
       drawGhostStone(hoverCoord.r, hoverCoord.c, engine.turn, cell, padding);
@@ -736,7 +1061,6 @@ function drawStone(r, c, color, cell, padding, isDead, isLastMove) {
   ctx.fill();
   ctx.restore();
 
-  // Highlight Last Move
   if (isLastMove) {
     ctx.strokeStyle = color === BLACK ? '#f8fafc' : '#0f172a';
     ctx.lineWidth = 2;
@@ -745,7 +1069,6 @@ function drawStone(r, c, color, cell, padding, isDead, isLastMove) {
     ctx.stroke();
   }
 
-  // Dead Stone X
   if (isDead) {
     ctx.strokeStyle = '#ef4444';
     ctx.lineWidth = 3;
@@ -772,7 +1095,6 @@ function drawGhostStone(r, c, color, cell, padding) {
   ctx.restore();
 }
 
-// Mouse events for board
 function getCoordFromMouse(e) {
   const rect = canvas.getBoundingClientRect();
   const scaleX = canvas.width / rect.width;
@@ -813,12 +1135,15 @@ canvas.addEventListener('click', (e) => {
   }
 });
 
-// Auto-check URL for ?room= to automatically join
+// Initialization
 window.addEventListener('DOMContentLoaded', () => {
+  renderArchivesList();
+
   const params = new URLSearchParams(window.location.search);
   const room = params.get('room');
   if (room) {
     joinRoomNameInput.value = room;
-    joinRoomAsGuest(sanitizeRoomName(room));
+    // Auto focus username input
+    joinPlayerNameInput.focus();
   }
 });

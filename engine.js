@@ -17,9 +17,9 @@ class GoEngine {
     this.consecutivePasses = 0;
     this.captured = { [BLACK]: 0, [WHITE]: 0 }; // captures made by BLACK and WHITE
     this.koPoint = null; // [r, c] that is illegal due to Ko
-    this.history = []; // board snapshots for full positional superko if needed
     this.phase = 'playing'; // 'playing', 'scoring', 'finished'
     this.deadStones = Array(this.size).fill(null).map(() => Array(this.size).fill(false));
+    this.history = []; // snapshots for undo and full game review
   }
 
   opponent(color) {
@@ -71,6 +71,18 @@ class GoEngine {
     return { chain, liberties };
   }
 
+  saveSnapshot(actionType, r = null, c = null) {
+    this.history.push({
+      board: this.board.map(row => [...row]),
+      turn: this.turn,
+      consecutivePasses: this.consecutivePasses,
+      captured: { ...this.captured },
+      koPoint: this.koPoint ? [...this.koPoint] : null,
+      phase: this.phase,
+      action: { type: actionType, r, c, player: this.turn }
+    });
+  }
+
   // Attempt to play a stone at (r, c) for the current turn
   playMove(r, c) {
     if (this.phase !== 'playing') {
@@ -117,8 +129,10 @@ class GoEngine {
       return { success: false, reason: "Illegal move: Suicide is forbidden under Japanese rules" };
     }
 
+    // Save snapshot prior to applying move
+    this.saveSnapshot('move', r, c);
+
     // Check for single stone Ko creation:
-    // If exactly 1 stone was captured and the placed stone is in an isolated chain with 1 liberty
     if (capturedStones.length === 1 && ownChain.length === 1 && ownLiberties.size === 1) {
       this.koPoint = capturedStones[0];
     } else {
@@ -142,6 +156,8 @@ class GoEngine {
   pass() {
     if (this.phase !== 'playing') return { success: false };
 
+    this.saveSnapshot('pass');
+
     this.consecutivePasses++;
     this.koPoint = null;
     const previousTurn = this.turn;
@@ -154,6 +170,25 @@ class GoEngine {
     }
 
     return { success: true, phaseChanged: false, passedBy: previousTurn, nextTurn: this.turn };
+  }
+
+  // Undo move: Reverts 1 or 2 turns back
+  undo(steps = 1) {
+    if (this.history.length === 0) return false;
+    let targetSnapshot = null;
+    while (steps > 0 && this.history.length > 0) {
+      targetSnapshot = this.history.pop();
+      steps--;
+    }
+    if (!targetSnapshot) return false;
+
+    this.board = targetSnapshot.board;
+    this.turn = targetSnapshot.turn;
+    this.consecutivePasses = targetSnapshot.consecutivePasses;
+    this.captured = targetSnapshot.captured;
+    this.koPoint = targetSnapshot.koPoint;
+    this.phase = targetSnapshot.phase;
+    return true;
   }
 
   resign(color) {
@@ -176,8 +211,6 @@ class GoEngine {
   }
 
   // Japanese Territory Calculation
-  // Territory = Empty intersections surrounded exclusively by living stones of one color
-  // Score = Territory + Captured Prisoners (+ Komi for White) + Dead Opponent Stones
   calculateJapaneseScore() {
     const visited = Array(this.size).fill(null).map(() => Array(this.size).fill(false));
     let blackTerritory = 0;
@@ -240,14 +273,10 @@ class GoEngine {
             whiteTerritory += region.length;
             for (const [ptR, ptC] of region) territoryMap[ptR][ptC] = WHITE;
           }
-          // Dame (neutral / disputed) otherwise
         }
       }
     }
 
-    // Japanese scoring formula:
-    // Black total: Territory + captured white prisoners + dead white stones
-    // White total: Territory + captured black prisoners + dead black stones + Komi
     const blackScore = blackTerritory + this.captured[BLACK] + deadWhiteCount;
     const whiteScore = whiteTerritory + this.captured[WHITE] + deadBlackCount + this.komi;
 
@@ -275,4 +304,3 @@ class GoEngine {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { GoEngine, EMPTY, BLACK, WHITE };
 }
-

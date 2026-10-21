@@ -97,7 +97,7 @@ body {
   font-size: 1.05rem;
 }
 
-/* Modern Lobby Cards */
+/* Lobby Cards */
 .lobby-grid {
   display: grid;
   grid-template-columns: 1.4fr 1fr;
@@ -208,7 +208,7 @@ input[type="text"]:focus, select:focus {
   color: #cbd5e1;
   border: 1px solid var(--surface-border);
   border-radius: 10px;
-  padding: 0 14px;
+  padding: 8px 14px;
   font-weight: 600;
   font-size: 0.85rem;
   cursor: pointer;
@@ -219,6 +219,21 @@ input[type="text"]:focus, select:focus {
   background: #263352;
   color: #fff;
 }
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 0.8rem;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-primary:hover { background: var(--primary-hover); }
 
 .btn-glow-primary {
   background: linear-gradient(135deg, #3b82f6, #2563eb);
@@ -274,7 +289,84 @@ input[type="text"]:focus, select:focus {
   line-height: 1.4;
 }
 
-/* Waiting Modal */
+/* Archives / Saved Games Section */
+.archives-section {
+  max-width: 950px;
+  margin: 36px auto 20px;
+  background: var(--surface-card);
+  border: 1px solid var(--surface-border);
+  border-radius: 16px;
+  padding: 24px;
+}
+
+.archives-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.archives-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.archives-title-group h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+.archives-counter {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  background: var(--surface-elevated);
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.archives-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.empty-archive {
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  padding: 20px;
+}
+
+.archive-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #0d1322;
+  border: 1px solid var(--surface-border);
+  padding: 12px 16px;
+  border-radius: 10px;
+  transition: all 0.2s ease;
+}
+.archive-card:hover {
+  border-color: var(--primary);
+  background: #10182b;
+}
+
+.archive-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.archive-matchup {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #f1f5f9;
+}
+.archive-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+/* Modals */
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -289,9 +381,9 @@ input[type="text"]:focus, select:focus {
 .modal-card {
   background: var(--surface-card);
   border: 1px solid var(--surface-border);
-  padding: 36px 30px;
+  padding: 32px 28px;
   border-radius: 20px;
-  max-width: 480px;
+  max-width: 460px;
   width: 90%;
   text-align: center;
   display: flex;
@@ -506,6 +598,10 @@ input[type="text"]:focus, select:focus {
 .player-title {
   font-size: 0.95rem;
   font-weight: 700;
+  max-width: 120px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .player-indicator {
   font-size: 0.75rem;
@@ -590,15 +686,27 @@ input[type="text"]:focus, select:focus {
   padding: 10px;
   border-radius: 8px;
   font-weight: 700;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   border: none;
   cursor: pointer;
   transition: all 0.2s;
 }
 .btn-warn { background: #d97706; color: #fff; }
 .btn-warn:hover { background: #b45309; }
+.btn-secondary { background: #475569; color: #fff; }
+.btn-secondary:hover { background: #334155; }
 .btn-danger { background: #dc2626; color: #fff; }
 .btn-danger:hover { background: #b91c1c; }
+
+/* Review Controls Bar */
+.review-nav-bar {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+.review-nav-bar button {
+  flex: 1;
+}
 
 /* Scoring Card */
 .scoring-card {
@@ -765,4 +873,8 @@ canvas#goBoard {
   background: rgba(255, 255, 255, 0.02);
   display: flex;
   justify-content: space-between;
+}
+.move-entry.active-step {
+  background: var(--surface-elevated);
+  border-left: 3px solid var(--primary);
 }
