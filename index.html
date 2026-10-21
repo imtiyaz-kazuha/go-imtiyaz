@@ -4,25 +4,27 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Go Online - Modern Japanese Baduk</title>
-  <!-- Google Fonts -->
+  <!-- Google Fonts: Inter & Outfit & JetBrains Mono -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
-  <!-- PeerJS for WebRTC P2P Room sync -->
+  <!-- PeerJS for WebRTC P2P sync -->
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
-  <div class="noise-overlay"></div>
+  <!-- Ambient background lighting spheres -->
+  <div class="ambient-glow glow-1"></div>
+  <div class="ambient-glow glow-2"></div>
 
   <!-- VIEW 1: Modern Home Page / Lobby -->
   <div id="homeView" class="view-container">
     <header class="hero-header">
       <div class="badge-pill">
-        <span class="pulsing-dot"></span> WebRTC Peer-to-Peer • Japanese Rules
+        <span class="pulsing-dot"></span> Peer-to-Peer • Japanese Nihon Ki-in Rules
       </div>
       <h1 class="hero-title">碁 Baduk Online</h1>
-      <p class="hero-subtitle">Real-time Japanese Go with live replay archives and custom time controls.</p>
+      <p class="hero-subtitle">Fast, serverless multiplayer Go with voice byo-yomi, interactive undos, and game replays.</p>
     </header>
 
     <div class="lobby-grid">
@@ -31,15 +33,15 @@
         <div class="card-header">
           <div class="card-icon">⚡</div>
           <div>
-            <h2>Create a Room</h2>
-            <p>Set up rules, time control, and choose your player handle.</p>
+            <h2>Create a Match</h2>
+            <p>Customize time controls, komi, and board size.</p>
           </div>
         </div>
 
         <form id="createRoomForm" class="form-flow">
           <div class="form-group">
             <label for="createPlayerName">Your Username</label>
-            <input type="text" id="createPlayerName" placeholder="e.g. MasterGo" required autocomplete="off" />
+            <input type="text" id="createPlayerName" placeholder="Enter your name..." required autocomplete="off" />
           </div>
 
           <div class="form-group">
@@ -48,7 +50,7 @@
               <input type="text" id="createRoomName" placeholder="e.g. dragon-cup" required autocomplete="off" />
               <button type="button" id="randomRoomBtn" class="btn-ghost" title="Generate Random Room Name">🎲 Random</button>
             </div>
-            <span class="field-hint">Your friend will enter this exact room name to play with you.</span>
+            <span class="field-hint">Your friend enters this room name to join you.</span>
           </div>
 
           <div class="form-grid-2">
@@ -62,7 +64,7 @@
             </div>
 
             <div class="form-group">
-              <label for="komiSetting">Komi</label>
+              <label for="komiSetting">Komi (White Advantage)</label>
               <select id="komiSetting">
                 <option value="6.5" selected>6.5 Points (Japanese)</option>
                 <option value="7.5">7.5 Points</option>
@@ -97,7 +99,7 @@
             </div>
           </div>
 
-          <button type="submit" class="btn-glow-primary">Create Room</button>
+          <button type="submit" class="btn-glow-primary">Create Room & Host</button>
         </form>
       </div>
 
@@ -106,43 +108,43 @@
         <div class="card-header">
           <div class="card-icon">🤝</div>
           <div>
-            <h2>Join a Room</h2>
-            <p>Enter your username and the room name.</p>
+            <h2>Join an Opponent</h2>
+            <p>Connect with a room name from your friend.</p>
           </div>
         </div>
 
         <form id="joinRoomForm" class="form-flow">
           <div class="form-group">
             <label for="joinPlayerName">Your Username</label>
-            <input type="text" id="joinPlayerName" placeholder="e.g. ZenStone" required autocomplete="off" />
+            <input type="text" id="joinPlayerName" placeholder="Enter your name..." required autocomplete="off" />
           </div>
 
           <div class="form-group">
             <label for="joinRoomName">Room Name</label>
-            <input type="text" id="joinRoomName" placeholder="Enter room name..." required autocomplete="off" />
+            <input type="text" id="joinRoomName" placeholder="Paste room name here..." required autocomplete="off" />
           </div>
 
-          <button type="submit" class="btn-glow-secondary">Join Game</button>
+          <button type="submit" class="btn-glow-secondary">Connect & Join Match</button>
         </form>
 
         <div class="info-callout">
-          <h4>💡 Instant Share</h4>
-          <p>Send a direct invite URL once the room is created to let your friend join directly!</p>
+          <h4>💡 Direct Invite Link</h4>
+          <p>Once your room is created, click <strong>"Copy Link"</strong> to give your friend instant 1-click access!</p>
         </div>
       </div>
     </div>
 
-    <!-- Match Archives / Past Games Review Section -->
+    <!-- Match Archives / Past Games Replay Section -->
     <section class="archives-section">
       <div class="archives-header">
         <div class="archives-title-group">
           <h2>📚 Past Games Archive</h2>
           <span class="archives-counter" id="savedGamesCount">0 games stored</span>
         </div>
-        <button id="clearArchivesBtn" class="btn-ghost btn-sm" title="Clear all local game history">Clear History</button>
+        <button id="clearArchivesBtn" class="btn-ghost btn-sm" title="Clear local game history">Clear History</button>
       </div>
       <div class="archives-list" id="archivesList">
-        <div class="empty-archive">No games saved yet. Complete a match to review moves step-by-step anytime!</div>
+        <div class="empty-archive">No games saved yet. Play and finish a match to analyze the game move-by-move!</div>
       </div>
     </section>
   </div>
@@ -152,7 +154,7 @@
     <div class="modal-card">
       <div class="loader-spinner"></div>
       <h2>Waiting for Opponent...</h2>
-      <p>Room <span class="highlight-room" id="waitingRoomName"></span> is ready and listening.</p>
+      <p>Room <span class="highlight-room" id="waitingRoomName"></span> is ready and waiting for a challenger.</p>
       
       <div class="share-box">
         <input type="text" id="shareUrlInput" readonly />
@@ -161,17 +163,17 @@
       
       <div class="settings-summary-tags" id="waitingSettingsSummary"></div>
 
-      <button id="cancelWaitingBtn" class="btn-ghost" style="margin-top: 15px;">Cancel & Return</button>
+      <button id="cancelWaitingBtn" class="btn-ghost" style="margin-top: 18px;">Cancel & Return</button>
     </div>
   </div>
 
-  <!-- VIEW 3: Undo Request Modal (Interactive confirmation for opponent) -->
+  <!-- VIEW 3: Undo Request Modal -->
   <div id="undoModal" class="modal-backdrop hidden">
     <div class="modal-card">
-      <div class="card-icon" style="margin-bottom: 12px;">↩️</div>
+      <div class="card-icon" style="margin-bottom: 12px; font-size: 1.8rem;">↩️</div>
       <h2>Undo Move Requested</h2>
       <p id="undoModalText">Your opponent requested to take back their last move. Do you accept?</p>
-      <div class="button-row" style="display: flex; gap: 10px; width: 100%; margin-top: 10px;">
+      <div class="button-row" style="display: flex; gap: 12px; width: 100%; margin-top: 12px;">
         <button id="acceptUndoBtn" class="btn-glow-primary" style="flex: 1;">Accept Undo</button>
         <button id="rejectUndoBtn" class="btn-ghost" style="flex: 1;">Decline</button>
       </div>
@@ -180,23 +182,26 @@
 
   <!-- VIEW 4: Active Game View -->
   <div id="gameView" class="view-container hidden">
-    <!-- Top Navigation Bar -->
+    <!-- Top Modern Navigation Bar -->
     <nav class="game-nav">
       <div class="brand">
-        <span class="brand-stone"></span>
+        <div class="brand-stone-duo">
+          <span class="b-stone"></span>
+          <span class="w-stone"></span>
+        </div>
         <span class="brand-text">Baduk Online</span>
         <span class="room-tag" id="activeRoomTag">Room: -</span>
       </div>
 
       <div class="nav-actions">
-        <button id="reviewModeToggleBtn" class="nav-btn hidden" title="Toggle interactive review">🔍 Review Game</button>
+        <button id="reviewModeToggleBtn" class="nav-btn btn-accent hidden" title="Toggle interactive review">🔍 Review Game</button>
         <button id="copyGameLinkBtn" class="nav-btn" title="Copy Invite Link">🔗 Share Link</button>
         <button id="leaveGameBtn" class="nav-btn btn-danger-soft">Leave Room</button>
       </div>
     </nav>
 
     <div class="game-board-layout">
-      <!-- Left Panel: Players & Clocks -->
+      <!-- Left Panel: Players, Clocks & Action Controls -->
       <aside class="game-panel left-panel">
         <!-- Black Player Box -->
         <div class="player-hud-card" id="blackHud">
@@ -204,13 +209,13 @@
             <div class="hud-identity">
               <span class="stone-avatar black-stone"></span>
               <div>
-                <h3 class="player-title" id="blackPlayerName">Black (Sente)</h3>
+                <h3 class="player-title" id="blackPlayerName">Black</h3>
                 <span class="player-indicator" id="blackRoleLabel">Player 1</span>
               </div>
             </div>
             <div class="captures-counter">
               <span class="cap-num" id="blackCaptures">0</span>
-              <span class="cap-label">Captures</span>
+              <span class="cap-label">Prisoners</span>
             </div>
           </div>
           <div class="timer-display" id="blackTimerBox">
@@ -225,13 +230,13 @@
             <div class="hud-identity">
               <span class="stone-avatar white-stone"></span>
               <div>
-                <h3 class="player-title" id="whitePlayerName">White (Gote)</h3>
+                <h3 class="player-title" id="whitePlayerName">White</h3>
                 <span class="player-indicator" id="whiteRoleLabel">Player 2</span>
               </div>
             </div>
             <div class="captures-counter">
               <span class="cap-num" id="whiteCaptures">0</span>
-              <span class="cap-label">Captures</span>
+              <span class="cap-label">Prisoners</span>
             </div>
           </div>
           <div class="komi-sub">+<span id="displayKomi">6.5</span> Komi</div>
@@ -241,28 +246,29 @@
           </div>
         </div>
 
-        <!-- Action Controls -->
+        <!-- Turn & Control Actions -->
         <div class="action-card" id="gameActionsCard">
           <div class="turn-status-banner" id="turnBanner">Current Turn: Black</div>
           <div class="game-action-buttons">
-            <button id="gamePassBtn" class="btn-action btn-warn">Pass Turn</button>
+            <button id="gamePassBtn" class="btn-action btn-warn hidden">Pass Turn</button>
             <button id="gameUndoBtn" class="btn-action btn-secondary">Request Undo</button>
-            <button id="gameResignBtn" class="btn-action btn-danger" style="grid-column: span 2;">Resign</button>
+            <button id="gameResignBtn" class="btn-action btn-danger">Resign</button>
           </div>
         </div>
 
-        <!-- Review Controls (Appears when reviewing game moves step-by-step) -->
+        <!-- Replay Review Controls Bar -->
         <div class="action-card hidden" id="reviewControlsCard">
-          <div class="turn-status-banner" id="reviewBanner">Review: Move 0 / 0</div>
+          <div class="turn-status-banner review-banner" id="reviewBanner">Move 0 / 0</div>
           <div class="review-nav-bar">
-            <button id="revFirstBtn" class="btn-ghost" title="First move">⏮️</button>
-            <button id="revPrevBtn" class="btn-ghost" title="Previous move">◀️ Back</button>
-            <button id="revNextBtn" class="btn-ghost" title="Next move">Forward ▶️</button>
-            <button id="revLastBtn" class="btn-ghost" title="Final position">⏭️</button>
+            <button id="revFirstBtn" class="btn-review-nav" title="First move">⏮️</button>
+            <button id="revPrevBtn" class="btn-review-nav" title="Previous move">◀️ Back</button>
+            <button id="revNextBtn" class="btn-review-nav" title="Next move">Forward ▶️</button>
+            <button id="revLastBtn" class="btn-review-nav" title="Final position">⏭️</button>
           </div>
+          <div class="review-hint">Tip: Use Left & Right arrow keys to step through moves!</div>
         </div>
 
-        <!-- Scoring Panel (Visible during Japanese dead-stone confirmation) -->
+        <!-- Japanese Scoring Removal Card -->
         <div class="scoring-card hidden" id="scoringCard">
           <div class="scoring-header">
             <h4>Japanese Territory Scoring</h4>
@@ -274,24 +280,24 @@
         </div>
       </aside>
 
-      <!-- Center: Go Board Canvas -->
+      <!-- Center: Go Board Canvas Wrapper -->
       <main class="board-wrapper">
         <div class="board-frame">
           <canvas id="goBoard" width="620" height="620"></canvas>
         </div>
       </main>
 
-      <!-- Right Panel: Live Chat & Move Log -->
+      <!-- Right Panel: Live Chat & Move History Tabs -->
       <aside class="game-panel right-panel">
         <div class="tab-box">
-          <button class="tab-btn active" id="tabChatBtn">Live Chat</button>
-          <button class="tab-btn" id="tabLogBtn">Move History</button>
+          <button class="tab-btn active" id="tabChatBtn">💬 Live Chat</button>
+          <button class="tab-btn" id="tabLogBtn">📜 Move History</button>
         </div>
 
         <!-- Chat View -->
         <div class="panel-body" id="chatPanel">
           <div class="chat-messages" id="chatMessages">
-            <div class="chat-system-msg">Connected to room. Say hi to your opponent!</div>
+            <div class="chat-system-msg">Connected to match. Good luck, have fun!</div>
           </div>
           <form id="chatForm" class="chat-input-bar">
             <input type="text" id="chatInput" placeholder="Send a message..." autocomplete="off" />

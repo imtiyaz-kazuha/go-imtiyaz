@@ -19,7 +19,17 @@ class GoEngine {
     this.koPoint = null; // [r, c] that is illegal due to Ko
     this.phase = 'playing'; // 'playing', 'scoring', 'finished'
     this.deadStones = Array(this.size).fill(null).map(() => Array(this.size).fill(false));
-    this.history = []; // snapshots for undo and full game review
+    
+    // Initial state at move 0
+    this.history = [{
+      board: this.board.map(row => [...row]),
+      turn: BLACK,
+      consecutivePasses: 0,
+      captured: { [BLACK]: 0, [WHITE]: 0 },
+      koPoint: null,
+      phase: 'playing',
+      action: { type: 'initial', r: null, c: null, player: null, captures: 0 }
+    }];
   }
 
   opponent(color) {
@@ -71,18 +81,6 @@ class GoEngine {
     return { chain, liberties };
   }
 
-  saveSnapshot(actionType, r = null, c = null) {
-    this.history.push({
-      board: this.board.map(row => [...row]),
-      turn: this.turn,
-      consecutivePasses: this.consecutivePasses,
-      captured: { ...this.captured },
-      koPoint: this.koPoint ? [...this.koPoint] : null,
-      phase: this.phase,
-      action: { type: actionType, r, c, player: this.turn }
-    });
-  }
-
   // Attempt to play a stone at (r, c) for the current turn
   playMove(r, c) {
     if (this.phase !== 'playing') {
@@ -129,9 +127,6 @@ class GoEngine {
       return { success: false, reason: "Illegal move: Suicide is forbidden under Japanese rules" };
     }
 
-    // Save snapshot prior to applying move
-    this.saveSnapshot('move', r, c);
-
     // Check for single stone Ko creation:
     if (capturedStones.length === 1 && ownChain.length === 1 && ownLiberties.size === 1) {
       this.koPoint = capturedStones[0];
@@ -139,11 +134,22 @@ class GoEngine {
       this.koPoint = null;
     }
 
-    // Apply move
+    // Apply move to board
     this.board = tempBoard;
     this.captured[player] += capturedStones.length;
     this.consecutivePasses = 0;
     this.turn = opp;
+
+    // Save snapshot AFTER the move is applied so this state corresponds to the move result
+    this.history.push({
+      board: this.board.map(row => [...row]),
+      turn: this.turn,
+      consecutivePasses: this.consecutivePasses,
+      captured: { ...this.captured },
+      koPoint: this.koPoint ? [...this.koPoint] : null,
+      phase: this.phase,
+      action: { type: 'move', r, c, player, captures: capturedStones.length }
+    });
 
     return {
       success: true,
@@ -156,37 +162,46 @@ class GoEngine {
   pass() {
     if (this.phase !== 'playing') return { success: false };
 
-    this.saveSnapshot('pass');
-
     this.consecutivePasses++;
     this.koPoint = null;
     const previousTurn = this.turn;
     this.turn = this.opponent(this.turn);
 
-    // If both players pass consecutively, enter Japanese scoring phase
     if (this.consecutivePasses >= 2) {
       this.phase = 'scoring';
+    }
+
+    this.history.push({
+      board: this.board.map(row => [...row]),
+      turn: this.turn,
+      consecutivePasses: this.consecutivePasses,
+      captured: { ...this.captured },
+      koPoint: null,
+      phase: this.phase,
+      action: { type: 'pass', r: null, c: null, player: previousTurn, captures: 0 }
+    });
+
+    if (this.phase === 'scoring') {
       return { success: true, phaseChanged: true, newPhase: 'scoring', passedBy: previousTurn };
     }
 
     return { success: true, phaseChanged: false, passedBy: previousTurn, nextTurn: this.turn };
   }
 
-  // Undo move: Reverts 1 or 2 turns back
+  // Undo move: Reverts back to previous state in history stack
   undo(steps = 1) {
-    if (this.history.length === 0) return false;
-    let targetSnapshot = null;
-    while (steps > 0 && this.history.length > 0) {
-      targetSnapshot = this.history.pop();
+    if (this.history.length <= 1) return false;
+    while (steps > 0 && this.history.length > 1) {
+      this.history.pop();
       steps--;
     }
-    if (!targetSnapshot) return false;
+    const targetSnapshot = this.history[this.history.length - 1];
 
-    this.board = targetSnapshot.board;
+    this.board = targetSnapshot.board.map(r => [...r]);
     this.turn = targetSnapshot.turn;
     this.consecutivePasses = targetSnapshot.consecutivePasses;
-    this.captured = targetSnapshot.captured;
-    this.koPoint = targetSnapshot.koPoint;
+    this.captured = { ...targetSnapshot.captured };
+    this.koPoint = targetSnapshot.koPoint ? [...targetSnapshot.koPoint] : null;
     this.phase = targetSnapshot.phase;
     return true;
   }

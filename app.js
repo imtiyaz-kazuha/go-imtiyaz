@@ -1,4 +1,4 @@
-// Modern Go (Baduk) Application Controller, Clocks, WebRTC Networking, Undo, Review & Archives
+// Modern Go (Baduk) Application Controller, Clocks, WebRTC Networking, Undo, Replay & Archives
 
 const PEER_PREFIX = "go-baduk-room-v1-";
 const STORAGE_KEY = "go_match_archives_v1";
@@ -26,13 +26,14 @@ function speakCountdown(number) {
   if ('speechSynthesis' in window) {
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(String(number));
-    utterance.rate = 1.35; // brisk, sharp countdown cadence
+    utterance.rate = 1.35;
     utterance.pitch = 1.05;
     utterance.volume = 1.0;
     window.speechSynthesis.speak(utterance);
   }
 }
 
+// Game State
 let engine = new GoEngine(19, 6.5);
 let peer = null;
 let conn = null;
@@ -60,7 +61,7 @@ let clockInterval = null;
 // Review Mode State
 let isReviewMode = false;
 let reviewStep = 0;
-let reviewHistory = []; // snapshots
+let reviewHistory = [];
 
 // DOM Elements
 const homeView = document.getElementById('homeView');
@@ -164,7 +165,7 @@ function sanitizeRoomName(name) {
 // -------------------------------------------------------------
 createRoomForm.addEventListener('submit', (e) => {
   e.preventDefault();
-  myUsername = createPlayerNameInput.value.trim() || "HostPlayer";
+  myUsername = createPlayerNameInput.value.trim() || "Host";
   const rawRoom = createRoomNameInput.value;
   const cleanName = sanitizeRoomName(rawRoom);
   if (!cleanName) return;
@@ -220,7 +221,6 @@ function createRoomAsHost(roomName, size, komi) {
     setupPeerEvents();
 
     conn.on('open', () => {
-      // Exchange username & rule configurations
       conn.send({
         type: 'INIT_GAME',
         size: engine.size,
@@ -236,7 +236,7 @@ function createRoomAsHost(roomName, size, komi) {
 // Join Room as Guest
 joinRoomForm.addEventListener('submit', (e) => {
   e.preventDefault();
-  myUsername = joinPlayerNameInput.value.trim() || "GuestPlayer";
+  myUsername = joinPlayerNameInput.value.trim() || "Guest";
   const cleanName = sanitizeRoomName(joinRoomNameInput.value);
   if (!cleanName) return;
   joinRoomAsGuest(cleanName);
@@ -256,7 +256,6 @@ function joinRoomAsGuest(roomName) {
     setupPeerEvents();
 
     conn.on('open', () => {
-      // Send guest username to host
       conn.send({
         type: 'GUEST_JOINED',
         guestUsername: myUsername
@@ -266,7 +265,7 @@ function joinRoomAsGuest(roomName) {
 
   peer.on('error', (err) => {
     console.error("Peer error:", err);
-    alert("Could not connect to room. Please verify the room name and make sure the host is waiting.");
+    alert("Could not connect to room. Verify room name and ensure the host is waiting.");
   });
 }
 
@@ -286,13 +285,13 @@ function handleIncomingData(data) {
       engine = new GoEngine(data.size, data.komi);
       clockConfig = data.clockConfig;
       currentRoomName = data.roomName;
-      opponentUsername = data.hostUsername || "HostPlayer";
+      opponentUsername = data.hostUsername || "Host";
       resetClocks();
       startGame();
       break;
 
     case 'GUEST_JOINED':
-      opponentUsername = data.guestUsername || "GuestPlayer";
+      opponentUsername = data.guestUsername || "Guest";
       startGame();
       break;
 
@@ -310,10 +309,11 @@ function handleIncomingData(data) {
       const pRes = engine.pass();
       if (pRes.success) {
         const pName = pRes.passedBy === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE);
+        logMove(null, null, pRes.passedBy, 0, true);
         appendChatMessage('system', `${pName} passed.`);
         if (pRes.phaseChanged) {
           stopClocks();
-          appendChatMessage('system', "Both players passed. Moving to Japanese Dead Stone removal phase.");
+          appendChatMessage('system', "Both passed! Japanese dead-stone removal phase.");
         } else {
           updateClocksOnMove(pRes.passedBy);
         }
@@ -331,7 +331,7 @@ function handleIncomingData(data) {
       break;
 
     case 'UNDO_REQUEST':
-      undoModalText.textContent = `${opponentUsername} has requested to undo their last move. Accept?`;
+      undoModalText.textContent = `${opponentUsername} requested to take back their last move. Accept?`;
       undoModal.classList.remove('hidden');
       break;
 
@@ -351,7 +351,7 @@ function handleIncomingData(data) {
 
     case 'CONFIRM_SCORE':
       engine.phase = 'finished';
-      appendChatMessage('system', `${opponentUsername} accepted the score!`);
+      appendChatMessage('system', `${opponentUsername} accepted final score!`);
       const score = engine.calculateJapaneseScore();
       const winnerName = score.winner === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE);
       finalizeAndSaveGame(`${winnerName} wins by ${score.margin.toFixed(1)} pts`);
@@ -396,6 +396,8 @@ function startGame() {
     whiteRoleLabel.textContent = "You";
   }
 
+  // Clear move history UI
+  movesListEl.innerHTML = '';
   isReviewMode = false;
   reviewModeToggleBtn.classList.add('hidden');
   gameActionsCard.classList.remove('hidden');
@@ -406,24 +408,25 @@ function startGame() {
 }
 
 // -------------------------------------------------------------
-// Undo System (Interactive Peer Agreement)
+// Interactive Undo System
 // -------------------------------------------------------------
 gameUndoBtn.addEventListener('click', () => {
   if (engine.phase !== 'playing') {
     appendChatMessage('system', "Cannot undo outside playing phase.");
     return;
   }
-  if (engine.history.length === 0) {
+  // history index 0 is initial empty board, so moves start at length > 1
+  if (engine.history.length <= 1) {
     appendChatMessage('system', "No moves have been played yet.");
     return;
   }
 
-  // Calculate steps to undo:
-  // If it's my turn, undo 2 steps (opponent's move + my previous move) or 1 step if opponent just played
-  const lastSnapshot = engine.history[engine.history.length - 1];
-  const steps = lastSnapshot.turn === myRole ? 1 : 2;
+  // Determine steps: if it's my turn, revert opponent's move + my previous move (2 steps)
+  // or 1 step if opponent just made their move
+  const lastSnap = engine.history[engine.history.length - 1];
+  const steps = lastSnap.action.player === myRole ? 1 : 2;
 
-  appendChatMessage('system', `Undo requested. Waiting for ${opponentUsername}'s approval...`);
+  appendChatMessage('system', `Undo requested. Waiting for ${opponentUsername}...`);
   if (conn && conn.open) {
     conn.send({ type: 'UNDO_REQUEST', steps });
   }
@@ -431,7 +434,7 @@ gameUndoBtn.addEventListener('click', () => {
 
 acceptUndoBtn.addEventListener('click', () => {
   undoModal.classList.add('hidden');
-  const steps = engine.history.length >= 2 ? 2 : 1;
+  const steps = engine.history.length > 2 ? 2 : 1;
   executeUndo(steps);
   if (conn && conn.open) {
     conn.send({ type: 'UNDO_RESPONSE', accepted: true, steps });
@@ -449,14 +452,10 @@ function executeUndo(steps = 1) {
   const success = engine.undo(steps);
   if (success) {
     appendChatMessage('system', `Reverted ${steps} move(s).`);
-    // Remove last entries from moves list UI
-    for (let i = 0; i < steps; i++) {
-      if (movesListEl.lastElementChild) {
-        movesListEl.removeChild(movesListEl.lastElementChild);
-      }
-    }
+    // Rebuild move list log accurately
+    rebuildMoveLogUI();
     lastMoveCoord = null;
-    if (engine.history.length > 0) {
+    if (engine.history.length > 1) {
       const prev = engine.history[engine.history.length - 1];
       if (prev.action && prev.action.r !== null) {
         lastMoveCoord = [prev.action.r, prev.action.c];
@@ -466,8 +465,30 @@ function executeUndo(steps = 1) {
   }
 }
 
+function rebuildMoveLogUI() {
+  movesListEl.innerHTML = '';
+  for (let i = 1; i < engine.history.length; i++) {
+    const snap = engine.history[i];
+    const act = snap.action;
+    const pName = act.player === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE);
+    const item = document.createElement('div');
+    item.className = 'move-entry';
+    item.setAttribute('data-step', i);
+
+    let desc = `${i}. ${pName}: `;
+    if (act.type === 'pass') {
+      desc += 'Pass';
+    } else {
+      desc += `${toGoNotation(act.r, act.c)} ${act.captures > 0 ? '(+' + act.captures + ')' : ''}`;
+    }
+    item.innerHTML = `<span>${desc}</span>`;
+    movesListEl.appendChild(item);
+  }
+  movesListEl.scrollTop = movesListEl.scrollHeight;
+}
+
 // -------------------------------------------------------------
-// Clocks & Japanese Byo-yomi
+// Clocks & Voice Byo-yomi
 // -------------------------------------------------------------
 function resetClocks() {
   const mainSec = clockConfig.mainMinutes * 60;
@@ -498,7 +519,6 @@ function startClocks() {
     } else {
       if (t.byoSec > 0) {
         t.byoSec--;
-        // Voice countdown when byo-yomi hits <= 10 seconds for the active player
         if (t.byoSec <= 10 && t.byoSec >= 1) {
           speakCountdown(t.byoSec);
         }
@@ -570,21 +590,13 @@ function updateClockDisplay() {
 function finalizeAndSaveGame(resultString) {
   reviewModeToggleBtn.classList.remove('hidden');
 
-  // Build clean history snapshots for replaying
+  // Build clean history snapshots for reliable replaying
   const snapshots = engine.history.map(h => ({
-    board: h.board,
-    action: h.action,
-    captured: h.captured,
+    board: h.board.map(r => [...r]),
+    action: { ...h.action },
+    captured: { ...h.captured },
     turn: h.turn
   }));
-
-  // Append final state
-  snapshots.push({
-    board: engine.board.map(r => [...r]),
-    action: { type: 'final' },
-    captured: { ...engine.captured },
-    turn: engine.turn
-  });
 
   const record = {
     id: 'game_' + Date.now(),
@@ -595,7 +607,7 @@ function finalizeAndSaveGame(resultString) {
     size: engine.size,
     komi: engine.komi,
     result: resultString,
-    totalMoves: engine.history.length,
+    totalMoves: engine.history.length - 1,
     snapshots: snapshots
   };
 
@@ -614,7 +626,6 @@ function getStoredGames() {
 function saveGameToLocalStorage(record) {
   const games = getStoredGames();
   games.unshift(record);
-  // Keep up to 25 games
   if (games.length > 25) games.pop();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(games));
 }
@@ -624,7 +635,7 @@ function renderArchivesList() {
   savedGamesCountEl.textContent = `${games.length} game${games.length === 1 ? '' : 's'} stored`;
 
   if (games.length === 0) {
-    archivesListEl.innerHTML = `<div class="empty-archive">No games saved yet. Complete a match to review moves step-by-step anytime!</div>`;
+    archivesListEl.innerHTML = `<div class="empty-archive">No games saved yet. Play and finish a match to analyze the game move-by-move!</div>`;
     return;
   }
 
@@ -642,7 +653,6 @@ function renderArchivesList() {
     archivesListEl.appendChild(card);
   });
 
-  // Attach review listeners
   document.querySelectorAll('.replay-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.getAttribute('data-id');
@@ -659,7 +669,7 @@ clearArchivesBtn.addEventListener('click', () => {
 });
 
 // -------------------------------------------------------------
-// Interactive Review Mode
+// Interactive Replay Review Mode
 // -------------------------------------------------------------
 function loadGameForReview(gameId) {
   const games = getStoredGames();
@@ -678,23 +688,36 @@ function loadGameForReview(gameId) {
 
   engine = new GoEngine(game.size, game.komi);
   reviewHistory = game.snapshots;
+
+  // Populate moves list
+  movesListEl.innerHTML = '';
+  for (let i = 1; i < reviewHistory.length; i++) {
+    const snap = reviewHistory[i];
+    const act = snap.action;
+    const pName = act.player === BLACK ? game.blackPlayer : game.whitePlayer;
+    const item = document.createElement('div');
+    item.className = 'move-entry';
+    item.setAttribute('data-step', i);
+
+    let desc = `${i}. ${pName}: `;
+    if (act.type === 'pass') desc += 'Pass';
+    else desc += `${toGoNotation(act.r, act.c)} ${act.captures > 0 ? '(+' + act.captures + ')' : ''}`;
+    item.innerHTML = `<span>${desc}</span>`;
+    item.addEventListener('click', () => showReviewStep(i));
+    movesListEl.appendChild(item);
+  }
+
   enterReviewMode();
 }
 
 reviewModeToggleBtn.addEventListener('click', () => {
   if (!isReviewMode) {
     reviewHistory = engine.history.map(h => ({
-      board: h.board,
-      action: h.action,
-      captured: h.captured,
+      board: h.board.map(r => [...r]),
+      action: { ...h.action },
+      captured: { ...h.captured },
       turn: h.turn
     }));
-    reviewHistory.push({
-      board: engine.board.map(r => [...r]),
-      action: { type: 'final' },
-      captured: { ...engine.captured },
-      turn: engine.turn
-    });
     enterReviewMode();
   } else {
     exitReviewMode();
@@ -706,7 +729,7 @@ function enterReviewMode() {
   gameActionsCard.classList.add('hidden');
   reviewControlsCard.classList.remove('hidden');
   reviewModeToggleBtn.textContent = "Exit Review";
-  reviewStep = reviewHistory.length - 1; // Start at final move
+  reviewStep = reviewHistory.length - 1;
   showReviewStep(reviewStep);
 }
 
@@ -737,7 +760,11 @@ function showReviewStep(step) {
 function highlightActiveLogEntry(step) {
   const entries = movesListEl.children;
   for (let i = 0; i < entries.length; i++) {
-    entries[i].classList.toggle('active-step', i === step - 1);
+    const isTarget = i === step - 1;
+    entries[i].classList.toggle('active-step', isTarget);
+    if (isTarget) {
+      entries[i].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
   }
 }
 
@@ -746,7 +773,6 @@ revPrevBtn.addEventListener('click', () => showReviewStep(reviewStep - 1));
 revNextBtn.addEventListener('click', () => showReviewStep(reviewStep + 1));
 revLastBtn.addEventListener('click', () => showReviewStep(reviewHistory.length - 1));
 
-// Keyboard arrow navigation for review
 window.addEventListener('keydown', (e) => {
   if (!isReviewMode) return;
   if (e.key === 'ArrowLeft') showReviewStep(reviewStep - 1);
@@ -754,7 +780,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 // -------------------------------------------------------------
-// In-Game Moves & Interaction
+// Board Clicks & Game Actions
 // -------------------------------------------------------------
 function handleBoardClick(r, c) {
   if (isReviewMode) return;
@@ -796,6 +822,7 @@ gamePassBtn.addEventListener('click', () => {
   }
   const res = engine.pass();
   if (res.success) {
+    logMove(null, null, res.passedBy, 0, true);
     appendChatMessage('system', `${getPlayerName(res.passedBy)} passed.`);
     if (res.phaseChanged) {
       stopClocks();
@@ -834,7 +861,7 @@ confirmScoreBtn.addEventListener('click', () => {
 });
 
 leaveGameBtn.addEventListener('click', () => {
-  if (confirm("Leave this room and return to home?")) {
+  if (confirm("Leave this match and return to home?")) {
     window.location.href = window.location.pathname;
   }
 });
@@ -913,12 +940,20 @@ function toGoNotation(r, c) {
   return `${letters[c]}${engine.size - r}`;
 }
 
-function logMove(r, c, player, capturedCount) {
-  const coord = toGoNotation(r, c);
+function logMove(r, c, player, capturedCount, isPass = false) {
+  const moveNum = engine.history.length - 1;
   const pName = player === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE);
   const item = document.createElement('div');
   item.className = 'move-entry';
-  item.innerHTML = `<span>${pName}</span> <span>${coord} ${capturedCount > 0 ? '(+' + capturedCount + ')' : ''}</span>`;
+  item.setAttribute('data-step', moveNum);
+
+  let desc = `${moveNum}. ${pName}: `;
+  if (isPass) {
+    desc += 'Pass';
+  } else {
+    desc += `${toGoNotation(r, c)} ${capturedCount > 0 ? '(+' + capturedCount + ')' : ''}`;
+  }
+  item.innerHTML = `<span>${desc}</span>`;
   movesListEl.appendChild(item);
   movesListEl.scrollTop = movesListEl.scrollHeight;
 }
@@ -936,8 +971,7 @@ function updateGameUI() {
   if (engine.phase === 'playing') {
     turnBanner.textContent = `Current Turn: ${engine.turn === BLACK ? getPlayerName(BLACK) : getPlayerName(WHITE)}`;
     scoringCard.classList.add('hidden');
-    
-    // Pass button only appears and is enabled when it is YOUR turn
+
     const isMyTurn = !conn || !myRole || engine.turn === myRole;
     gamePassBtn.classList.toggle('hidden', !isMyTurn);
     gamePassBtn.disabled = !isMyTurn;
@@ -959,7 +993,7 @@ function updateGameUI() {
     `;
   } else if (engine.phase === 'finished') {
     scoringCard.classList.remove('hidden');
-    gamePassBtn.disabled = true;
+    gamePassBtn.classList.add('hidden');
     gameUndoBtn.disabled = true;
     gameResignBtn.disabled = true;
     const score = engine.calculateJapaneseScore();
@@ -980,10 +1014,10 @@ function renderBoard() {
 
   ctx.clearRect(0, 0, width, height);
 
-  ctx.fillStyle = '#dcb378';
+  ctx.fillStyle = '#dfb274';
   ctx.fillRect(0, 0, width, height);
 
-  ctx.strokeStyle = '#3e271a';
+  ctx.strokeStyle = '#3b2513';
   ctx.lineWidth = 1.2;
 
   for (let i = 0; i < size; i++) {
@@ -999,7 +1033,7 @@ function renderBoard() {
   }
 
   const letters = "ABCDEFGHJKLMNOPQRST";
-  ctx.fillStyle = '#452814';
+  ctx.fillStyle = '#42240c';
   ctx.font = '600 11px system-ui';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -1011,7 +1045,7 @@ function renderBoard() {
     ctx.fillText(`${size - i}`, width - 14, padding + i * cell);
   }
 
-  ctx.fillStyle = '#3e271a';
+  ctx.fillStyle = '#3b2513';
   for (const [sr, sc] of getStarPoints(size)) {
     ctx.beginPath();
     ctx.arc(padding + sc * cell, padding + sr * cell, 3.5, 0, Math.PI * 2);
@@ -1084,7 +1118,7 @@ function drawStone(r, c, color, cell, padding, isDead, isLastMove) {
   if (color === BLACK) {
     grad.addColorStop(0, '#555');
     grad.addColorStop(1, '#111');
-    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    ctx.shadowColor = 'rgba(0,0,0,0.55)';
     ctx.shadowBlur = 6;
     ctx.shadowOffsetX = 2;
     ctx.shadowOffsetY = 2;
@@ -1103,7 +1137,7 @@ function drawStone(r, c, color, cell, padding, isDead, isLastMove) {
 
   if (isLastMove) {
     ctx.strokeStyle = color === BLACK ? '#f8fafc' : '#0f172a';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 2.2;
     ctx.beginPath();
     ctx.arc(x, y, radius * 0.45, 0, Math.PI * 2);
     ctx.stroke();
@@ -1183,7 +1217,6 @@ window.addEventListener('DOMContentLoaded', () => {
   const room = params.get('room');
   if (room) {
     joinRoomNameInput.value = room;
-    // Auto focus username input
     joinPlayerNameInput.focus();
   }
 });
