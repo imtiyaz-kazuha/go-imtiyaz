@@ -1,251 +1,617 @@
-// Application Controller, Canvas Rendering & WebRTC PeerJS Sync
+// Modern Go (Baduk) Application Controller, Clocks, WebRTC Room Networking & In-game Chat
 
+const PEER_PREFIX = "go-baduk-room-v1-";
+
+// Game State
 let engine = new GoEngine(19, 6.5);
 let peer = null;
 let conn = null;
-let myRole = null; // BLACK, WHITE, or null (local/spectator)
+let isHost = false;
+let myRole = null; // BLACK, WHITE, or null
+let currentRoomName = "";
 let hoverCoord = null;
+let lastMoveCoord = null;
 
-// UI Elements
-const canvas = document.getElementById('goBoard');
-const ctx = canvas.getContext('2d');
-const myPeerIdEl = document.getElementById('myPeerId');
-const targetPeerIdInput = document.getElementById('targetPeerId');
-const connectBtn = document.getElementById('connectBtn');
-const copyLinkBtn = document.getElementById('copyLinkBtn');
-const connectionStatusEl = document.getElementById('connectionStatus');
+// Clock Configuration
+let clockConfig = {
+  mainMinutes: 10,
+  byoyomiSeconds: 30,
+  byoyomiPeriods: 3
+};
+
+let timers = {
+  [BLACK]: { mainSec: 600, byoSec: 30, periodsLeft: 3, inByoyomi: false },
+  [WHITE]: { mainSec: 600, byoSec: 30, periodsLeft: 3, inByoyomi: false }
+};
+let clockInterval = null;
+
+// DOM Elements
+const homeView = document.getElementById('homeView');
+const waitingModal = document.getElementById('waitingModal');
+const gameView = document.getElementById('gameView');
+
+const createRoomForm = document.getElementById('createRoomForm');
+const createRoomNameInput = document.getElementById('createRoomName');
+const randomRoomBtn = document.getElementById('randomRoomBtn');
+const boardSizeSetting = document.getElementById('boardSizeSetting');
+const komiSetting = document.getElementById('komiSetting');
+const mainTimeSetting = document.getElementById('mainTimeSetting');
+const byoyomiSetting = document.getElementById('byoyomiSetting');
+
+const joinRoomForm = document.getElementById('joinRoomForm');
+const joinRoomNameInput = document.getElementById('joinRoomName');
+
+const waitingRoomNameEl = document.getElementById('waitingRoomName');
+const shareUrlInput = document.getElementById('shareUrlInput');
+const copyShareUrlBtn = document.getElementById('copyShareUrlBtn');
+const waitingSettingsSummary = document.getElementById('waitingSettingsSummary');
+const cancelWaitingBtn = document.getElementById('cancelWaitingBtn');
+
+const activeRoomTag = document.getElementById('activeRoomTag');
+const copyGameLinkBtn = document.getElementById('copyGameLinkBtn');
+const leaveGameBtn = document.getElementById('leaveGameBtn');
+
+const blackHud = document.getElementById('blackHud');
+const whiteHud = document.getElementById('whiteHud');
+const blackRoleLabel = document.getElementById('blackRoleLabel');
+const whiteRoleLabel = document.getElementById('whiteRoleLabel');
 const blackCapturesEl = document.getElementById('blackCaptures');
 const whiteCapturesEl = document.getElementById('whiteCaptures');
-const blackRoleTag = document.getElementById('blackRoleTag');
-const whiteRoleTag = document.getElementById('whiteRoleTag');
-const blackPlayerBox = document.getElementById('blackPlayerBox');
-const whitePlayerBox = document.getElementById('whitePlayerBox');
-const turnIndicatorEl = document.getElementById('turnIndicator');
-const gamePhaseEl = document.getElementById('gamePhase');
-const lastMoveEl = document.getElementById('lastMove');
-const passBtn = document.getElementById('passBtn');
-const resignBtn = document.getElementById('resignBtn');
-const newGameBtn = document.getElementById('newGameBtn');
-const boardSizeSelect = document.getElementById('boardSizeSelect');
-const gameLogEl = document.getElementById('gameLog');
+const displayKomiEl = document.getElementById('displayKomi');
+const blackMainTimeEl = document.getElementById('blackMainTime');
+const blackByoyomiEl = document.getElementById('blackByoyomi');
+const whiteMainTimeEl = document.getElementById('whiteMainTime');
+const whiteByoyomiEl = document.getElementById('whiteByoyomi');
+
+const turnBanner = document.getElementById('turnBanner');
+const gamePassBtn = document.getElementById('gamePassBtn');
+const gameResignBtn = document.getElementById('gameResignBtn');
 const scoringCard = document.getElementById('scoringCard');
-const scoreSummaryEl = document.getElementById('scoreSummary');
-const finishScoringBtn = document.getElementById('finishScoringBtn');
+const scoreBreakdownEl = document.getElementById('scoreBreakdown');
+const confirmScoreBtn = document.getElementById('confirmScoreBtn');
 
-// Initialize PeerJS
-function initPeer() {
-  // Using PeerJS cloud public broker (free & reliable WebRTC signaling)
-  peer = new Peer();
+const canvas = document.getElementById('goBoard');
+const ctx = canvas.getContext('2d');
 
-  peer.on('open', (id) => {
-    myPeerIdEl.textContent = id;
-    logMessage(`Your Peer ID is ready: ${id}`);
-    checkUrlForPeerConnection();
+const tabChatBtn = document.getElementById('tabChatBtn');
+const tabLogBtn = document.getElementById('tabLogBtn');
+const chatPanel = document.getElementById('chatPanel');
+const logPanel = document.getElementById('logPanel');
+const chatMessagesEl = document.getElementById('chatMessages');
+const chatForm = document.getElementById('chatForm');
+const chatInput = document.getElementById('chatInput');
+const movesListEl = document.getElementById('movesList');
+
+// Random Room Generator
+const ADJECTIVES = ["swift", "silent", "wise", "golden", "mighty", "zen", "cosmic", "deep", "hidden", "bold"];
+const NOUNS = ["dragon", "tiger", "stone", "bamboo", "ko", "hoshi", "mountain", "crane", "river", "wind"];
+function getRandomRoomName() {
+  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
+  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
+  const num = Math.floor(Math.random() * 900) + 100;
+  return `${adj}-${noun}-${num}`;
+}
+randomRoomBtn.addEventListener('click', () => {
+  createRoomNameInput.value = getRandomRoomName();
+});
+
+// Sanitize room name to valid peer ID format
+function sanitizeRoomName(name) {
+  return name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+}
+
+// -------------------------------------------------------------
+// Room Creation & WebRTC Peer Management
+// -------------------------------------------------------------
+createRoomForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const rawName = createRoomNameInput.value;
+  const cleanName = sanitizeRoomName(rawName);
+  if (!cleanName) return;
+
+  const size = parseInt(boardSizeSetting.value, 10);
+  const komi = parseFloat(komiSetting.value);
+  const mainMins = parseInt(mainTimeSetting.value, 10);
+  const [byoSec, byoPer] = byoyomiSetting.value.split('|').map(Number);
+
+  clockConfig = {
+    mainMinutes: mainMins,
+    byoyomiSeconds: byoSec,
+    byoyomiPeriods: byoPer
+  };
+
+  createRoomAsHost(cleanName, size, komi);
+});
+
+function createRoomAsHost(roomName, size, komi) {
+  currentRoomName = roomName;
+  isHost = true;
+  myRole = BLACK; // Host plays Black (Sente)
+
+  engine = new GoEngine(size, komi);
+  resetClocks();
+
+  // Peer ID = prefix + room name
+  const peerId = PEER_PREFIX + roomName;
+  if (peer) peer.destroy();
+
+  peer = new Peer(peerId);
+
+  // Show Waiting Screen
+  waitingRoomNameEl.textContent = roomName;
+  const joinUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(roomName)}`;
+  shareUrlInput.value = joinUrl;
+  waitingSettingsSummary.innerHTML = `
+    <span>Board: ${size}x${size}</span>
+    <span>Komi: ${komi}</span>
+    <span>Time: ${clockConfig.mainMinutes > 0 ? clockConfig.mainMinutes + 'm' : 'Unlimited'}</span>
+    <span>Byo: ${clockConfig.byoyomiSeconds}s (${clockConfig.byoyomiPeriods}x)</span>
+  `;
+  waitingModal.classList.remove('hidden');
+
+  peer.on('error', (err) => {
+    if (err.type === 'unavailable-id') {
+      alert(`Room "${roomName}" is currently already active or hosted by someone else! Please choose another name.`);
+      waitingModal.classList.add('hidden');
+    } else {
+      console.error("Peer error:", err);
+    }
   });
 
   peer.on('connection', (incomingConn) => {
-    if (conn && conn.open) {
-      logMessage(`Rejected additional connection.`);
-      return;
-    }
-    setupConnection(incomingConn, false);
+    conn = incomingConn;
+    setupPeerEvents();
+    // Send Game Handshake with Rules & Timers to Guest
+    conn.on('open', () => {
+      conn.send({
+        type: 'INIT_GAME',
+        size: engine.size,
+        komi: engine.komi,
+        clockConfig: clockConfig,
+        roomName: currentRoomName
+      });
+      startGame();
+    });
+  });
+}
+
+// Join Room as Guest
+joinRoomForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const cleanName = sanitizeRoomName(joinRoomNameInput.value);
+  if (!cleanName) return;
+  joinRoomAsGuest(cleanName);
+});
+
+function joinRoomAsGuest(roomName) {
+  currentRoomName = roomName;
+  isHost = false;
+  myRole = WHITE; // Guest plays White (Gote)
+
+  if (peer) peer.destroy();
+  // Random guest ID
+  peer = new Peer();
+
+  peer.on('open', () => {
+    const targetPeerId = PEER_PREFIX + roomName;
+    conn = peer.connect(targetPeerId);
+    setupPeerEvents();
   });
 
   peer.on('error', (err) => {
     console.error("Peer error:", err);
-    connectionStatusEl.textContent = `Error: ${err.type}`;
-    connectionStatusEl.className = 'connection-status error';
+    alert("Could not connect to room. Please check the room name and make sure the host is waiting.");
   });
 }
 
-function checkUrlForPeerConnection() {
-  const urlParams = new URLSearchParams(window.location.search);
-  const targetId = urlParams.get('join');
-  if (targetId && targetId !== peer.id) {
-    targetPeerIdInput.value = targetId;
-    connectToPeer(targetId);
-  }
-}
-
-function connectToPeer(targetId) {
-  if (!peer || !targetId) return;
-  logMessage(`Connecting to ${targetId}...`);
-  connectionStatusEl.textContent = "Connecting to friend...";
-  connectionStatusEl.className = "connection-status disconnected";
-  const outgoingConn = peer.connect(targetId);
-  setupConnection(outgoingConn, true);
-}
-
-function setupConnection(c, isInitiator) {
-  conn = c;
-
-  conn.on('open', () => {
-    connectionStatusEl.textContent = `Connected with peer!`;
-    connectionStatusEl.className = 'connection-status connected';
-    logMessage("P2P connection established!");
-
-    if (isInitiator) {
-      // Initiator joins as White; Host is Black
-      myRole = WHITE;
-      conn.send({ type: 'ASSIGN_ROLE', hostRole: BLACK, guestRole: WHITE });
-      setRoles(WHITE);
-    } else {
-      myRole = BLACK;
-      setRoles(BLACK);
-    }
-    updateUI();
-  });
-
+function setupPeerEvents() {
   conn.on('data', (data) => {
-    handlePeerMessage(data);
+    handleIncomingData(data);
   });
 
   conn.on('close', () => {
-    connectionStatusEl.textContent = "Friend disconnected.";
-    connectionStatusEl.className = "connection-status disconnected";
-    logMessage("Peer connection closed.");
-    conn = null;
-    myRole = null;
-    updateUI();
+    appendChatMessage('system', 'Opponent disconnected from the game.');
   });
 }
 
-function setRoles(myColor) {
-  if (myColor === BLACK) {
-    blackRoleTag.textContent = "(You)";
-    whiteRoleTag.textContent = "(Friend)";
-  } else if (myColor === WHITE) {
-    blackRoleTag.textContent = "(Friend)";
-    whiteRoleTag.textContent = "(You)";
-  } else {
-    blackRoleTag.textContent = "";
-    whiteRoleTag.textContent = "";
-  }
-}
-
-function handlePeerMessage(data) {
+function handleIncomingData(data) {
   switch (data.type) {
-    case 'ASSIGN_ROLE':
-      // The other side told us roles
+    case 'INIT_GAME':
+      engine = new GoEngine(data.size, data.komi);
+      clockConfig = data.clockConfig;
+      currentRoomName = data.roomName;
+      resetClocks();
+      startGame();
       break;
 
     case 'MOVE':
       const res = engine.playMove(data.r, data.c);
       if (res.success) {
+        lastMoveCoord = [data.r, data.c];
         logMove(data.r, data.c, res.player, res.captured.length);
-        updateUI();
+        updateClocksOnMove(res.player);
+        updateGameUI();
       }
       break;
 
     case 'PASS':
       const pRes = engine.pass();
       if (pRes.success) {
-        logMessage(`${pRes.passedBy === BLACK ? 'Black' : 'White'} passed.`);
+        appendChatMessage('system', `${pRes.passedBy === BLACK ? 'Black' : 'White'} passed.`);
         if (pRes.phaseChanged) {
-          logMessage("Both passed! Japanese dead-stone scoring phase started.");
+          stopClocks();
+          appendChatMessage('system', "Both players passed. Moving to Japanese Dead Stone removal phase.");
+        } else {
+          updateClocksOnMove(pRes.passedBy);
         }
-        updateUI();
+        updateGameUI();
       }
       break;
 
     case 'RESIGN':
       engine.resign(data.color);
-      logMessage(`${data.color === BLACK ? 'Black' : 'White'} resigned.`);
-      updateUI();
-      break;
-
-    case 'NEW_GAME':
-      engine = new GoEngine(data.size, 6.5);
-      boardSizeSelect.value = data.size;
-      logMessage(`New game started (${data.size}x${data.size}).`);
-      updateUI();
+      stopClocks();
+      appendChatMessage('system', `${data.color === BLACK ? 'Black' : 'White'} has resigned.`);
+      updateGameUI();
       break;
 
     case 'TOGGLE_DEAD':
       engine.toggleDeadStone(data.r, data.c);
-      updateUI();
+      updateGameUI();
       break;
 
-    case 'ACCEPT_SCORE':
+    case 'CONFIRM_SCORE':
       engine.phase = 'finished';
-      logMessage("Both players accepted the score!");
-      updateUI();
+      appendChatMessage('system', "Opponent accepted final score. Game complete!");
+      updateGameUI();
+      break;
+
+    case 'CHAT':
+      appendChatMessage('opponent', data.text, data.sender);
+      break;
+
+    case 'SYNC_TIME':
+      if (!isHost) {
+        timers = data.timers;
+        updateClockDisplay();
+      }
       break;
   }
 }
 
-// Coordinate conversions
-function toGoCoord(r, c) {
-  const letters = "ABCDEFGHJKLMNOPQRST"; // I is omitted in traditional Go notation
-  return `${letters[c]}${engine.size - r}`;
-}
+function startGame() {
+  waitingModal.classList.add('hidden');
+  homeView.classList.add('hidden');
+  gameView.classList.remove('hidden');
 
-function logMove(r, c, player, capturedCount) {
-  const coord = toGoCoord(r, c);
-  const pName = player === BLACK ? "Black" : "White";
-  let msg = `${pName} played at ${coord}`;
-  if (capturedCount > 0) {
-    msg += ` (Captured ${capturedCount} stone${capturedCount > 1 ? 's' : ''})`;
+  activeRoomTag.textContent = `Room: ${currentRoomName}`;
+  displayKomiEl.textContent = engine.komi;
+
+  if (myRole === BLACK) {
+    blackRoleLabel.textContent = "You";
+    whiteRoleLabel.textContent = "Opponent";
+  } else {
+    blackRoleLabel.textContent = "Opponent";
+    whiteRoleLabel.textContent = "You";
   }
-  lastMoveEl.textContent = `Last Move: ${pName} at ${coord}`;
-  logMessage(msg);
+
+  startClocks();
+  updateGameUI();
 }
 
-function logMessage(msg) {
-  const div = document.createElement('div');
-  div.textContent = msg;
-  gameLogEl.appendChild(div);
-  gameLogEl.scrollTop = gameLogEl.scrollHeight;
+// -------------------------------------------------------------
+// Chess/Go Clock & Japanese Byo-yomi
+// -------------------------------------------------------------
+function resetClocks() {
+  const mainSec = clockConfig.mainMinutes * 60;
+  timers = {
+    [BLACK]: { mainSec: mainSec, byoSec: clockConfig.byoyomiSeconds, periodsLeft: clockConfig.byoyomiPeriods, inByoyomi: mainSec === 0 },
+    [WHITE]: { mainSec: mainSec, byoSec: clockConfig.byoyomiSeconds, periodsLeft: clockConfig.byoyomiPeriods, inByoyomi: mainSec === 0 }
+  };
+  updateClockDisplay();
 }
 
-// User Actions
+function startClocks() {
+  if (clockInterval) clearInterval(clockInterval);
+  if (clockConfig.mainMinutes === 0 && clockConfig.byoyomiSeconds === 0) return; // Unlimited
+
+  clockInterval = setInterval(() => {
+    if (engine.phase !== 'playing') return;
+
+    const currentTurn = engine.turn;
+    const t = timers[currentTurn];
+
+    if (!t.inByoyomi) {
+      if (t.mainSec > 0) {
+        t.mainSec--;
+      } else {
+        t.inByoyomi = true;
+        t.byoSec = clockConfig.byoyomiSeconds;
+      }
+    } else {
+      if (t.byoSec > 0) {
+        t.byoSec--;
+      } else {
+        // Lost one byoyomi period
+        t.periodsLeft--;
+        if (t.periodsLeft <= 0) {
+          // Time out loss
+          engine.phase = 'finished';
+          stopClocks();
+          const winner = engine.opponent(currentTurn);
+          appendChatMessage('system', `${currentTurn === BLACK ? 'Black' : 'White'} lost on time.`);
+          updateGameUI();
+          return;
+        } else {
+          t.byoSec = clockConfig.byoyomiSeconds;
+        }
+      }
+    }
+
+    updateClockDisplay();
+
+    // Host periodically syncs authoritative time
+    if (isHost && conn && conn.open && t.mainSec % 2 === 0) {
+      conn.send({ type: 'SYNC_TIME', timers });
+    }
+  }, 1000);
+}
+
+function updateClocksOnMove(playerWhoJustMoved) {
+  const t = timers[playerWhoJustMoved];
+  // If in byoyomi, reset period countdown for next turn
+  if (t && t.inByoyomi && t.periodsLeft > 0) {
+    t.byoSec = clockConfig.byoyomiSeconds;
+  }
+  updateClockDisplay();
+}
+
+function stopClocks() {
+  if (clockInterval) clearInterval(clockInterval);
+}
+
+function formatTime(totalSeconds) {
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
+function updateClockDisplay() {
+  if (clockConfig.mainMinutes === 0) {
+    blackMainTimeEl.textContent = "∞";
+    whiteMainTimeEl.textContent = "∞";
+    blackByoyomiEl.textContent = "Unlimited";
+    whiteByoyomiEl.textContent = "Unlimited";
+    return;
+  }
+
+  // Black Clock
+  const b = timers[BLACK];
+  blackMainTimeEl.textContent = formatTime(b.mainSec);
+  blackByoyomiEl.textContent = b.inByoyomi ? `${b.byoSec}s (${b.periodsLeft} left)` : `${clockConfig.byoyomiSeconds}s (${clockConfig.byoyomiPeriods}x)`;
+
+  // White Clock
+  const w = timers[WHITE];
+  whiteMainTimeEl.textContent = formatTime(w.mainSec);
+  whiteByoyomiEl.textContent = w.inByoyomi ? `${w.byoSec}s (${w.periodsLeft} left)` : `${clockConfig.byoyomiSeconds}s (${clockConfig.byoyomiPeriods}x)`;
+}
+
+// -------------------------------------------------------------
+// In-Game Moves & Interaction
+// -------------------------------------------------------------
 function handleBoardClick(r, c) {
   if (engine.phase === 'playing') {
-    // If online, ensure it's our turn
     if (conn && myRole && engine.turn !== myRole) {
-      logMessage("Wait for your turn!");
+      appendChatMessage('system', "It's not your turn!");
       return;
     }
 
     const res = engine.playMove(r, c);
     if (!res.success) {
-      logMessage(`Move error: ${res.reason}`);
+      appendChatMessage('system', `Illegal: ${res.reason}`);
       return;
     }
 
+    lastMoveCoord = [r, c];
     logMove(r, c, res.player, res.captured.length);
+    updateClocksOnMove(res.player);
 
-    // Sync with peer
     if (conn && conn.open) {
       conn.send({ type: 'MOVE', r, c });
     }
-    updateUI();
+    updateGameUI();
 
   } else if (engine.phase === 'scoring') {
     engine.toggleDeadStone(r, c);
     if (conn && conn.open) {
       conn.send({ type: 'TOGGLE_DEAD', r, c });
     }
-    updateUI();
+    updateGameUI();
   }
 }
 
-// Canvas Rendering
+// Pass & Resign
+gamePassBtn.addEventListener('click', () => {
+  if (conn && myRole && engine.turn !== myRole) {
+    appendChatMessage('system', "Wait for your turn to pass.");
+    return;
+  }
+  const res = engine.pass();
+  if (res.success) {
+    appendChatMessage('system', `${res.passedBy === BLACK ? 'Black' : 'White'} passed.`);
+    if (res.phaseChanged) {
+      stopClocks();
+      appendChatMessage('system', "Both passed! Japanese dead-stone scoring initiated.");
+    } else {
+      updateClocksOnMove(res.passedBy);
+    }
+    if (conn && conn.open) conn.send({ type: 'PASS' });
+    updateGameUI();
+  }
+});
+
+gameResignBtn.addEventListener('click', () => {
+  if (!confirm("Are you sure you want to resign the game?")) return;
+  const resigningColor = (conn && myRole) ? myRole : engine.turn;
+  engine.resign(resigningColor);
+  stopClocks();
+  appendChatMessage('system', `${resigningColor === BLACK ? 'Black' : 'White'} resigned.`);
+  if (conn && conn.open) conn.send({ type: 'RESIGN', color: resigningColor });
+  updateGameUI();
+});
+
+confirmScoreBtn.addEventListener('click', () => {
+  engine.phase = 'finished';
+  appendChatMessage('system', "You accepted the final Japanese score.");
+  if (conn && conn.open) conn.send({ type: 'CONFIRM_SCORE' });
+  updateGameUI();
+});
+
+// Leave Game
+leaveGameBtn.addEventListener('click', () => {
+  if (confirm("Leave this room and return to home?")) {
+    window.location.href = window.location.pathname;
+  }
+});
+
+// Share URL helpers
+function copyGameInvite() {
+  const url = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(currentRoomName)}`;
+  navigator.clipboard.writeText(url).then(() => {
+    alert("Room invite link copied to clipboard!");
+  }).catch(() => {
+    prompt("Copy this invite link:", url);
+  });
+}
+copyShareUrlBtn.addEventListener('click', copyGameInvite);
+copyGameLinkBtn.addEventListener('click', copyGameInvite);
+
+cancelWaitingBtn.addEventListener('click', () => {
+  if (peer) peer.destroy();
+  waitingModal.classList.add('hidden');
+});
+
+// -------------------------------------------------------------
+// Live Chat System
+// -------------------------------------------------------------
+tabChatBtn.addEventListener('click', () => {
+  tabChatBtn.classList.add('active');
+  tabLogBtn.classList.remove('active');
+  chatPanel.classList.remove('hidden');
+  logPanel.classList.add('hidden');
+});
+
+tabLogBtn.addEventListener('click', () => {
+  tabLogBtn.classList.add('active');
+  tabChatBtn.classList.remove('active');
+  logPanel.classList.remove('hidden');
+  chatPanel.classList.add('hidden');
+});
+
+chatForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = chatInput.value.trim();
+  if (!text) return;
+
+  const senderName = myRole === BLACK ? 'Black' : (myRole === WHITE ? 'White' : 'Player');
+  appendChatMessage('me', text, senderName);
+
+  if (conn && conn.open) {
+    conn.send({ type: 'CHAT', text, sender: senderName });
+  }
+
+  chatInput.value = '';
+});
+
+function appendChatMessage(type, text, sender = '') {
+  const msgEl = document.createElement('div');
+  if (type === 'system') {
+    msgEl.className = 'chat-system-msg';
+    msgEl.textContent = text;
+  } else {
+    msgEl.className = `chat-msg ${type === 'me' ? 'me' : 'them'}`;
+    const nameEl = document.createElement('div');
+    nameEl.className = 'sender-name';
+    nameEl.textContent = sender;
+    const bodyEl = document.createElement('div');
+    bodyEl.textContent = text;
+    msgEl.appendChild(nameEl);
+    msgEl.appendChild(bodyEl);
+  }
+  chatMessagesEl.appendChild(msgEl);
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+
+// -------------------------------------------------------------
+// Canvas Board Rendering & UI Sync
+// -------------------------------------------------------------
+function toGoNotation(r, c) {
+  const letters = "ABCDEFGHJKLMNOPQRST";
+  return `${letters[c]}${engine.size - r}`;
+}
+
+function logMove(r, c, player, capturedCount) {
+  const coord = toGoNotation(r, c);
+  const pName = player === BLACK ? "Black" : "White";
+  const item = document.createElement('div');
+  item.className = 'move-entry';
+  item.innerHTML = `<span>${pName}</span> <span>${coord} ${capturedCount > 0 ? '(+' + capturedCount + ')' : ''}</span>`;
+  movesListEl.appendChild(item);
+  movesListEl.scrollTop = movesListEl.scrollHeight;
+}
+
+function updateGameUI() {
+  renderBoard();
+
+  blackCapturesEl.textContent = engine.captured[BLACK];
+  whiteCapturesEl.textContent = engine.captured[WHITE];
+
+  blackHud.classList.toggle('active-turn', engine.phase === 'playing' && engine.turn === BLACK);
+  whiteHud.classList.toggle('active-turn', engine.phase === 'playing' && engine.turn === WHITE);
+
+  if (engine.phase === 'playing') {
+    turnBanner.textContent = `Current Turn: ${engine.turn === BLACK ? 'Black' : 'White'}`;
+    scoringCard.classList.add('hidden');
+    gamePassBtn.disabled = false;
+    gameResignBtn.disabled = false;
+  } else if (engine.phase === 'scoring') {
+    turnBanner.textContent = `Japanese Scoring Phase`;
+    scoringCard.classList.remove('hidden');
+    gamePassBtn.disabled = true;
+
+    const score = engine.calculateJapaneseScore();
+    scoreBreakdownEl.innerHTML = `
+      <strong>Black:</strong> ${score.black.territory} terr + ${score.black.prisoners} captured + ${score.black.deadEnemyStones} dead = <strong>${score.black.total}</strong><br>
+      <strong>White:</strong> ${score.white.territory} terr + ${score.white.prisoners} captured + ${score.white.deadEnemyStones} dead + ${score.white.komi} komi = <strong>${score.white.total}</strong><br>
+      <em>Projected: ${score.winner === BLACK ? 'Black' : 'White'} by ${score.margin.toFixed(1)} pts</em>
+    `;
+  } else if (engine.phase === 'finished') {
+    scoringCard.classList.remove('hidden');
+    gamePassBtn.disabled = true;
+    gameResignBtn.disabled = true;
+    const score = engine.calculateJapaneseScore();
+    turnBanner.textContent = `Game Over: ${score.winner === BLACK ? 'Black' : 'White'} wins!`;
+    scoreBreakdownEl.innerHTML = `
+      <strong>Final Result:</strong> ${score.winner === BLACK ? 'Black' : 'White'} wins by ${score.margin.toFixed(1)} points!
+    `;
+  }
+}
+
 function renderBoard() {
   const width = canvas.width;
   const height = canvas.height;
   const size = engine.size;
-  const padding = 35;
+  const padding = 34;
   const cell = (width - padding * 2) / (size - 1);
 
   ctx.clearRect(0, 0, width, height);
 
-  // Background wood color
-  ctx.fillStyle = '#deb887';
+  // Board wood background
+  ctx.fillStyle = '#dcb378';
   ctx.fillRect(0, 0, width, height);
 
   // Grid lines
-  ctx.strokeStyle = '#3e2723';
+  ctx.strokeStyle = '#3e271a';
   ctx.lineWidth = 1.2;
 
   for (let i = 0; i < size; i++) {
@@ -262,41 +628,38 @@ function renderBoard() {
     ctx.stroke();
   }
 
-  // Coordinate Labels
+  // Coordinate notation
   const letters = "ABCDEFGHJKLMNOPQRST";
-  ctx.fillStyle = '#4a2c11';
-  ctx.font = '11px sans-serif';
+  ctx.fillStyle = '#452814';
+  ctx.font = '600 11px system-ui';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
   for (let i = 0; i < size; i++) {
-    // Columns (letters)
-    ctx.fillText(letters[i], padding + i * cell, 16);
-    ctx.fillText(letters[i], padding + i * cell, height - 16);
-    // Rows (numbers)
-    ctx.fillText(`${size - i}`, 16, padding + i * cell);
-    ctx.fillText(`${size - i}`, width - 16, padding + i * cell);
+    ctx.fillText(letters[i], padding + i * cell, 14);
+    ctx.fillText(letters[i], padding + i * cell, height - 14);
+    ctx.fillText(`${size - i}`, 14, padding + i * cell);
+    ctx.fillText(`${size - i}`, width - 14, padding + i * cell);
   }
 
-  // Star Points (Hoshi)
-  const starCoords = getStarPoints(size);
-  ctx.fillStyle = '#3e2723';
-  for (const [sr, sc] of starCoords) {
+  // Star points
+  ctx.fillStyle = '#3e271a';
+  for (const [sr, sc] of getStarPoints(size)) {
     ctx.beginPath();
     ctx.arc(padding + sc * cell, padding + sr * cell, 3.5, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // Territory markers if in scoring/finished phase
+  // Territory markers if scoring
   if (engine.phase === 'scoring' || engine.phase === 'finished') {
     const scoreData = engine.calculateJapaneseScore();
     for (let r = 0; r < size; r++) {
       for (let c = 0; c < size; c++) {
         const owner = scoreData.territoryMap[r][c];
         if (owner !== EMPTY) {
-          ctx.fillStyle = owner === BLACK ? 'rgba(0, 0, 0, 0.4)' : 'rgba(255, 255, 255, 0.6)';
-          const squareSize = cell * 0.35;
-          ctx.fillRect(padding + c * cell - squareSize / 2, padding + r * cell - squareSize / 2, squareSize, squareSize);
+          ctx.fillStyle = owner === BLACK ? 'rgba(0, 0, 0, 0.4)' : 'rgba(255, 255, 255, 0.65)';
+          const sq = cell * 0.35;
+          ctx.fillRect(padding + c * cell - sq / 2, padding + r * cell - sq / 2, sq, sq);
         }
       }
     }
@@ -308,12 +671,13 @@ function renderBoard() {
       const stone = engine.board[r][c];
       if (stone !== EMPTY) {
         const isDead = engine.deadStones[r][c];
-        drawStone(r, c, stone, cell, padding, isDead);
+        const isLastMove = lastMoveCoord && lastMoveCoord[0] === r && lastMoveCoord[1] === c;
+        drawStone(r, c, stone, cell, padding, isDead, isLastMove);
       }
     }
   }
 
-  // Hover Ghost Stone Preview
+  // Hover Ghost stone preview
   if (hoverCoord && engine.phase === 'playing' && engine.board[hoverCoord.r][hoverCoord.c] === EMPTY) {
     const isMyTurn = !conn || !myRole || engine.turn === myRole;
     if (isMyTurn) {
@@ -327,9 +691,7 @@ function getStarPoints(size) {
     const pts = [3, 9, 15];
     const coords = [];
     for (const r of pts) {
-      for (const c of pts) {
-        coords.push([r, c]);
-      }
+      for (const c of pts) coords.push([r, c]);
     }
     return coords;
   } else if (size === 13) {
@@ -340,7 +702,7 @@ function getStarPoints(size) {
   return [];
 }
 
-function drawStone(r, c, color, cell, padding, isDead = false) {
+function drawStone(r, c, color, cell, padding, isDead, isLastMove) {
   const x = padding + c * cell;
   const y = padding + r * cell;
   const radius = cell * 0.46;
@@ -349,7 +711,6 @@ function drawStone(r, c, color, cell, padding, isDead = false) {
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, Math.PI * 2);
 
-  // Gradient shading for realistic stones
   const grad = ctx.createRadialGradient(
     x - radius * 0.3, y - radius * 0.3, radius * 0.1,
     x, y, radius
@@ -358,24 +719,33 @@ function drawStone(r, c, color, cell, padding, isDead = false) {
   if (color === BLACK) {
     grad.addColorStop(0, '#555');
     grad.addColorStop(1, '#111');
-    ctx.shadowColor = 'rgba(0,0,0,0.4)';
-    ctx.shadowBlur = 5;
+    ctx.shadowColor = 'rgba(0,0,0,0.5)';
+    ctx.shadowBlur = 6;
     ctx.shadowOffsetX = 2;
     ctx.shadowOffsetY = 2;
   } else {
     grad.addColorStop(0, '#ffffff');
     grad.addColorStop(1, '#dedede');
-    ctx.shadowColor = 'rgba(0,0,0,0.3)';
-    ctx.shadowBlur = 4;
+    ctx.shadowColor = 'rgba(0,0,0,0.35)';
+    ctx.shadowBlur = 5;
     ctx.shadowOffsetX = 1;
-    ctx.shadowOffsetY = 1;
+    ctx.shadowOffsetY = 2;
   }
 
   ctx.fillStyle = grad;
   ctx.fill();
   ctx.restore();
 
-  // If marked dead during scoring phase, draw a red X
+  // Highlight Last Move
+  if (isLastMove) {
+    ctx.strokeStyle = color === BLACK ? '#f8fafc' : '#0f172a';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, radius * 0.45, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Dead Stone X
   if (isDead) {
     ctx.strokeStyle = '#ef4444';
     ctx.lineWidth = 3;
@@ -397,51 +767,13 @@ function drawGhostStone(r, c, color, cell, padding) {
   ctx.save();
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, Math.PI * 2);
-  ctx.fillStyle = color === BLACK ? 'rgba(0, 0, 0, 0.45)' : 'rgba(255, 255, 255, 0.55)';
+  ctx.fillStyle = color === BLACK ? 'rgba(0, 0, 0, 0.4)' : 'rgba(255, 255, 255, 0.55)';
   ctx.fill();
   ctx.restore();
 }
 
-function updateUI() {
-  renderBoard();
-
-  blackCapturesEl.textContent = engine.captured[BLACK];
-  whiteCapturesEl.textContent = engine.captured[WHITE];
-
-  const isPlaying = engine.phase === 'playing';
-  passBtn.disabled = !isPlaying;
-  resignBtn.disabled = !isPlaying;
-
-  if (engine.phase === 'playing') {
-    turnIndicatorEl.innerHTML = `Current Turn: <strong>${engine.turn === BLACK ? 'Black' : 'White'}</strong>`;
-    gamePhaseEl.textContent = "Phase: Playing";
-    scoringCard.classList.add('hidden');
-    blackPlayerBox.classList.toggle('active-turn', engine.turn === BLACK);
-    whitePlayerBox.classList.toggle('active-turn', engine.turn === WHITE);
-  } else if (engine.phase === 'scoring') {
-    turnIndicatorEl.innerHTML = `<strong>Japanese Scoring Phase</strong>`;
-    gamePhaseEl.textContent = "Phase: Confirming Dead Stones";
-    scoringCard.classList.remove('hidden');
-
-    const score = engine.calculateJapaneseScore();
-    scoreSummaryEl.innerHTML = `
-      <strong>Black:</strong> ${score.black.territory} terr + ${score.black.prisoners} captured + ${score.black.deadEnemyStones} dead = <strong>${score.black.total}</strong><br>
-      <strong>White:</strong> ${score.white.territory} terr + ${score.white.prisoners} captured + ${score.white.deadEnemyStones} dead + ${score.white.komi} komi = <strong>${score.white.total}</strong><br>
-      <em>Projected Leader: ${score.winner === BLACK ? 'Black' : 'White'} by ${score.margin.toFixed(1)} pts</em>
-    `;
-  } else if (engine.phase === 'finished') {
-    turnIndicatorEl.innerHTML = `<strong>Game Finished</strong>`;
-    gamePhaseEl.textContent = "Phase: Finished";
-    scoringCard.classList.remove('hidden');
-    const score = engine.calculateJapaneseScore();
-    scoreSummaryEl.innerHTML = `
-      <strong>Result:</strong> ${score.winner === BLACK ? 'Black' : 'White'} wins by ${score.margin.toFixed(1)} points!
-    `;
-  }
-}
-
-// Canvas Mouse Events
-function getGridCoordFromMouse(e) {
+// Mouse events for board
+function getCoordFromMouse(e) {
   const rect = canvas.getBoundingClientRect();
   const scaleX = canvas.width / rect.width;
   const scaleY = canvas.height / rect.height;
@@ -449,7 +781,7 @@ function getGridCoordFromMouse(e) {
   const mouseX = (e.clientX - rect.left) * scaleX;
   const mouseY = (e.clientY - rect.top) * scaleY;
 
-  const padding = 35;
+  const padding = 34;
   const cell = (canvas.width - padding * 2) / (engine.size - 1);
 
   const c = Math.round((mouseX - padding) / cell);
@@ -462,7 +794,7 @@ function getGridCoordFromMouse(e) {
 }
 
 canvas.addEventListener('mousemove', (e) => {
-  const coord = getGridCoordFromMouse(e);
+  const coord = getCoordFromMouse(e);
   if (coord) {
     hoverCoord = coord;
     renderBoard();
@@ -475,76 +807,18 @@ canvas.addEventListener('mouseleave', () => {
 });
 
 canvas.addEventListener('click', (e) => {
-  const coord = getGridCoordFromMouse(e);
+  const coord = getCoordFromMouse(e);
   if (coord) {
     handleBoardClick(coord.r, coord.c);
   }
 });
 
-// Button Handlers
-passBtn.addEventListener('click', () => {
-  if (conn && myRole && engine.turn !== myRole) {
-    logMessage("Wait for your turn to pass!");
-    return;
-  }
-  const res = engine.pass();
-  if (res.success) {
-    logMessage(`${res.passedBy === BLACK ? 'Black' : 'White'} passed.`);
-    if (res.phaseChanged) {
-      logMessage("Both players passed. Moving to Japanese dead-stone scoring.");
-    }
-    if (conn && conn.open) conn.send({ type: 'PASS' });
-    updateUI();
+// Auto-check URL for ?room= to automatically join
+window.addEventListener('DOMContentLoaded', () => {
+  const params = new URLSearchParams(window.location.search);
+  const room = params.get('room');
+  if (room) {
+    joinRoomNameInput.value = room;
+    joinRoomAsGuest(sanitizeRoomName(room));
   }
 });
-
-resignBtn.addEventListener('click', () => {
-  if (!confirm("Are you sure you want to resign?")) return;
-  const resigningColor = (conn && myRole) ? myRole : engine.turn;
-  engine.resign(resigningColor);
-  logMessage(`${resigningColor === BLACK ? 'Black' : 'White'} resigned.`);
-  if (conn && conn.open) conn.send({ type: 'RESIGN', color: resigningColor });
-  updateUI();
-});
-
-newGameBtn.addEventListener('click', () => {
-  const chosenSize = parseInt(boardSizeSelect.value, 10);
-  engine = new GoEngine(chosenSize, 6.5);
-  logMessage(`New game started (${chosenSize}x${chosenSize}).`);
-  if (conn && conn.open) conn.send({ type: 'NEW_GAME', size: chosenSize });
-  updateUI();
-});
-
-finishScoringBtn.addEventListener('click', () => {
-  engine.phase = 'finished';
-  logMessage("Score accepted.");
-  if (conn && conn.open) conn.send({ type: 'ACCEPT_SCORE' });
-  updateUI();
-});
-
-connectBtn.addEventListener('click', () => {
-  let targetId = targetPeerIdInput.value.trim();
-  if (!targetId) return;
-  // If the user pasted the entire invite link, extract the ?join= param
-  if (targetId.includes('?join=')) {
-    try {
-      const url = new URL(targetId);
-      targetId = url.searchParams.get('join') || targetId;
-    } catch (_) {}
-  }
-  connectToPeer(targetId);
-});
-
-copyLinkBtn.addEventListener('click', () => {
-  if (!peer || !peer.id) return;
-  const url = `${window.location.origin}${window.location.pathname}?join=${peer.id}`;
-  navigator.clipboard.writeText(url).then(() => {
-    alert("Invite link copied to clipboard! Send it to your friend.");
-  }).catch(() => {
-    prompt("Copy this invite link:", url);
-  });
-});
-
-// Start Peer and initial render
-initPeer();
-updateUI();
